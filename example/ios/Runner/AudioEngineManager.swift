@@ -46,9 +46,12 @@ class AudioEngineManager {
     /// - Throws: Audio session configuration errors
     func initialize() throws {
         let startTime = CFAbsoluteTimeGetCurrent()
+        log("=== INITIALIZE START ===", level: .info)
+        logAudioSessionState("initialize-start")
+        logAudioEngineState("initialize-start")
         
         guard state == .idle else {
-            // Already initialized
+            log("Already initialized, state: \(state)", level: .warning)
             return
         }
         
@@ -58,16 +61,28 @@ class AudioEngineManager {
         
         // Set up audio engine (without preparing - that happens when recording starts)
         let engineStartTime = CFAbsoluteTimeGetCurrent()
-        try setupAudioEngine()
-        let engineDuration = (CFAbsoluteTimeGetCurrent() - engineStartTime) * 1000
-        logEvent("audio_engine_setup", metadata: ["duration_ms": engineDuration])
+        log("Setting up audio engine...", level: .info)
+        do {
+            try setupAudioEngine()
+            let engineDuration = (CFAbsoluteTimeGetCurrent() - engineStartTime) * 1000
+            log("Audio engine setup completed in \(String(format: "%.2f", engineDuration))ms", level: .info)
+            logEvent("audio_engine_setup", metadata: ["duration_ms": engineDuration])
+        } catch {
+            let engineDuration = (CFAbsoluteTimeGetCurrent() - engineStartTime) * 1000
+            log("Audio engine setup FAILED after \(String(format: "%.2f", engineDuration))ms: \(error)", level: .error)
+            throw error
+        }
         
         // Register for audio session interruptions
+        log("Setting up interruption handling...", level: .info)
         setupInterruptionHandling()
         
         state = .idle
         
         let totalDuration = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
+        log("=== INITIALIZE COMPLETE in \(String(format: "%.2f", totalDuration))ms ===", level: .info)
+        logAudioSessionState("initialize-complete")
+        logAudioEngineState("initialize-complete")
         logEvent("audio_engine_initialize_complete", metadata: ["total_duration_ms": totalDuration])
     }
     
@@ -116,18 +131,88 @@ class AudioEngineManager {
     
     /// Requests microphone permission asynchronously.
     /// Must be called on the main thread to ensure the permission dialog appears.
+    /// iOS requires permission dialogs to be triggered directly from user actions on the main thread.
     /// - Returns: True if granted, false otherwise
     private func requestMicrophonePermission() async -> Bool {
-        // Ensure we're on the main thread for the permission request
-        // This is required for the permission dialog to appear
+        let requestStartTime = CFAbsoluteTimeGetCurrent()
+        let currentStatus = audioSession.recordPermission
+        let isMainThread = Thread.isMainThread
+        
+        log("=== REQUEST MICROPHONE PERMISSION START ===", level: .info)
+        log("Current permission status: \(currentStatus)", level: .info)
+        log("Current thread: \(isMainThread ? "MAIN" : "BACKGROUND")", level: .info)
+        log("Thread name: \(Thread.current.name ?? "unnamed")", level: .info)
+        log("Call stack: \(Thread.callStackSymbols.prefix(5).joined(separator: "\n"))", level: .debug)
+        logAudioSessionState("permission-request-start")
+        
+        // If already granted, return immediately
+        if currentStatus == .granted {
+            log("Permission already granted, returning immediately", level: .info)
+            return true
+        }
+        
+        // If denied, return false immediately (can't request again)
+        if currentStatus == .denied {
+            log("Permission already denied. User must grant in Settings.", level: .warning)
+            return false
+        }
+        
+        // For .undetermined status, request permission
+        // CRITICAL: Permission request must happen on main thread to preserve user action context.
+        // iOS requires permission dialogs to be triggered directly from user actions on main thread.
+        log("Permission status is .undetermined, requesting permission...", level: .info)
+        
         return await withCheckedContinuation { continuation in
+            // Ensure we're on main thread - this is critical for permission dialog to appear
             if Thread.isMainThread {
-                audioSession.requestRecordPermission { granted in
+                self.log("Calling requestRecordPermission directly on MAIN thread", level: .info)
+                let callTime = CFAbsoluteTimeGetCurrent()
+                self.audioSession.requestRecordPermission { granted in
+                    let callbackTime = CFAbsoluteTimeGetCurrent()
+                    let callbackDuration = (callbackTime - callTime) * 1000
+                    let totalDuration = (callbackTime - requestStartTime) * 1000
+                    
+                    self.log("Permission request callback received after \(String(format: "%.2f", callbackDuration))ms", level: .info)
+                    self.log("Total permission request duration: \(String(format: "%.2f", totalDuration))ms", level: .info)
+                    self.log("Permission granted: \(granted)", level: granted ? .info : .warning)
+                    
+                    // Verify the status matches what we got
+                    let verifiedStatus = self.audioSession.recordPermission
+                    self.log("Verified permission status after callback: \(verifiedStatus)", level: .info)
+                    
+                    if verifiedStatus != (granted ? AVAudioSession.RecordPermission.granted : AVAudioSession.RecordPermission.denied) {
+                        self.log("WARNING: Permission status mismatch! Callback said \(granted) but status is \(verifiedStatus)", level: .error)
+                    }
+                    
+                    self.logAudioSessionState("permission-request-complete")
+                    self.log("=== REQUEST MICROPHONE PERMISSION COMPLETE ===", level: .info)
                     continuation.resume(returning: granted)
                 }
             } else {
+                // Dispatch to main thread if we're not already there
+                self.log("NOT on main thread! Dispatching to main thread (this may break permission dialog)", level: .warning)
                 DispatchQueue.main.async {
+                    self.log("Now on main thread, calling requestRecordPermission", level: .info)
+                    let callTime = CFAbsoluteTimeGetCurrent()
                     self.audioSession.requestRecordPermission { granted in
+                        let callbackTime = CFAbsoluteTimeGetCurrent()
+                        let callbackDuration = (callbackTime - callTime) * 1000
+                        let totalDuration = (callbackTime - requestStartTime) * 1000
+                        
+                        self.log("Permission request callback received after \(String(format: "%.2f", callbackDuration))ms", level: .info)
+                        self.log("Total permission request duration: \(String(format: "%.2f", totalDuration))ms", level: .info)
+                        self.log("Permission granted: \(granted)", level: granted ? .info : .warning)
+                        
+                        // Verify the status matches what we got
+                        let verifiedStatus = self.audioSession.recordPermission
+                        self.log("Verified permission status after callback: \(verifiedStatus)", level: .info)
+                        
+                        if verifiedStatus != (granted ? AVAudioSession.RecordPermission.granted : AVAudioSession.RecordPermission.denied) {
+                            self.log("WARNING: Permission status mismatch! Callback said \(granted) but status is \(verifiedStatus)", level: .error)
+                        }
+                        
+                        self.logAudioSessionState("permission-request-complete")
+                        self.log("=== REQUEST MICROPHONE PERMISSION COMPLETE ===", level: .info)
                         continuation.resume(returning: granted)
                     }
                 }
@@ -209,64 +294,344 @@ class AudioEngineManager {
     /// - Throws: Audio engine start errors or permission errors
     func startRecording() async throws {
         let startTime = CFAbsoluteTimeGetCurrent()
+        log("=== START RECORDING START ===", level: .info)
+        log("Current state: \(state)", level: .info)
+        log("Current thread: \(Thread.isMainThread ? "MAIN" : "BACKGROUND")", level: .info)
+        logAudioSessionState("start-recording-start")
+        logAudioEngineState("start-recording-start")
         
         guard state != .recording else {
-            // Already recording
+            log("Already recording, returning early", level: .warning)
             return
         }
         
+        // Stop and reset audio engine if it's already running
+        if audioEngine.isRunning {
+            log("Audio engine is already running, stopping it first...", level: .info)
+            audioEngine.stop()
+            inputNode.removeTap(onBus: 0)
+            log("Audio engine stopped", level: .info)
+        }
+        
+        // Deactivate audio session first to ensure clean state
+        // This allows us to reconfigure the session properly
+        log("Deactivating audio session to ensure clean state...", level: .info)
+        do {
+            try audioSession.setActive(false, options: .notifyOthersOnDeactivation)
+            log("Audio session deactivated successfully", level: .info)
+        } catch {
+            // Ignore errors when deactivating - session might not be active
+            log("Warning: Failed to deactivate audio session (may not be active): \(error)", level: .warning)
+        }
+        
+        // Set audio session category FIRST (before requesting permission)
+        // Setting the category doesn't require permission - it just declares intent
+        // This is required for the permission dialog to appear properly
+        log("Setting audio session category to .record mode .measurement...", level: .info)
+        let sessionStartTime = CFAbsoluteTimeGetCurrent()
+        do {
+            try audioSession.setCategory(.record, mode: .measurement, options: [])
+            let sessionDuration = (CFAbsoluteTimeGetCurrent() - sessionStartTime) * 1000
+            log("Audio session category set successfully in \(String(format: "%.2f", sessionDuration))ms", level: .info)
+            logAudioSessionState("after-category-set")
+            logEvent("audio_session_category_set", metadata: ["duration_ms": sessionDuration])
+        } catch {
+            let sessionDuration = (CFAbsoluteTimeGetCurrent() - sessionStartTime) * 1000
+            log("FAILED to set audio session category after \(String(format: "%.2f", sessionDuration))ms: \(error)", level: .error)
+            logAudioSessionState("after-category-set-failed")
+            throw NSError(
+                domain: "AudioEngineManager",
+                code: -1,
+                userInfo: [
+                    NSLocalizedDescriptionKey: "Failed to set audio session category: \(error.localizedDescription)"
+                ]
+            )
+        }
+        
         // Check and request microphone permission if needed
+        // Must be done AFTER setting category so iOS knows why we need permission
+        log("Checking microphone permission...", level: .info)
         let permissionStartTime = CFAbsoluteTimeGetCurrent()
-        if !checkMicrophonePermission() {
-            let granted = await requestMicrophonePermission()
-            let permissionDuration = (CFAbsoluteTimeGetCurrent() - permissionStartTime) * 1000
-            logEvent("microphone_permission_request", metadata: ["duration_ms": permissionDuration, "granted": granted])
-            
-            guard granted else {
+        let permissionStatus = audioSession.recordPermission
+        log("Current permission status: \(permissionStatus)", level: .info)
+        log("Current thread: \(Thread.isMainThread ? "MAIN" : "BACKGROUND")", level: .info)
+        
+        if permissionStatus != .granted {
+            log("Permission not granted, requesting permission...", level: .info)
+            // Request permission - CRITICAL: Must be called directly on main thread to preserve user action context
+            // iOS requires permission dialogs to be triggered directly from user actions on the main thread.
+            // The Task wrapper breaks this context chain, so we call directly since we ensure main thread upstream.
+            // Verify we're on main thread - if not, this is a programming error
+            guard Thread.isMainThread else {
+                log("ERROR: Not on main thread! This will prevent permission dialog from appearing.", level: .error)
+                log("Thread: \(Thread.current.name ?? "unnamed")", level: .error)
                 throw NSError(
                     domain: "AudioEngineManager",
                     code: -1,
                     userInfo: [
-                        NSLocalizedDescriptionKey: "Microphone permission denied. Please grant microphone access in Settings to use dictation."
+                        NSLocalizedDescriptionKey: "Permission request must be called on main thread. This is a programming error."
                     ]
                 )
             }
+            let granted = await requestMicrophonePermission()
+            
+            let permissionDuration = (CFAbsoluteTimeGetCurrent() - permissionStartTime) * 1000
+            log("Permission request completed in \(String(format: "%.2f", permissionDuration))ms, granted: \(granted)", level: .info)
+            logEvent("microphone_permission_request", metadata: ["duration_ms": permissionDuration, "granted": granted, "previous_status": "\(permissionStatus)"])
+            
+            // Verify permission was actually granted
+            let finalPermissionStatus = audioSession.recordPermission
+            log("Permission status after request: \(finalPermissionStatus)", level: .info)
+            logAudioSessionState("after-permission-request")
+            
+            guard finalPermissionStatus == .granted else {
+                let errorMessage: String
+                if finalPermissionStatus == .denied {
+                    errorMessage = "Microphone permission denied. Please grant microphone access in Settings > Privacy & Security > Microphone to use dictation."
+                } else {
+                    errorMessage = "Microphone permission not granted. Current status: \(finalPermissionStatus). Please grant microphone access to use dictation."
+                }
+                log("Permission not granted after request. Status: \(finalPermissionStatus)", level: .error)
+                throw NSError(
+                    domain: "AudioEngineManager",
+                    code: -1,
+                    userInfo: [
+                        NSLocalizedDescriptionKey: errorMessage
+                    ]
+                )
+            }
+            log("Permission granted successfully!", level: .info)
+        } else {
+            log("Permission already granted, skipping request", level: .info)
         }
         
-        // Configure audio session for recording (now that permission is granted)
-        // This must be done before preparing the audio engine
-        let sessionStartTime = CFAbsoluteTimeGetCurrent()
-        try configureAudioSession()
-        let sessionDuration = (CFAbsoluteTimeGetCurrent() - sessionStartTime) * 1000
-        logEvent("audio_session_config", metadata: ["duration_ms": sessionDuration])
-        
-        // Install tap (must be done before engine starts)
-        // If engine is already running, stop it first
-        if audioEngine.isRunning {
-            audioEngine.stop()
+        // Complete audio session configuration (now that permission is granted)
+        log("Configuring audio session buffer duration and sample rate...", level: .info)
+        // Buffer duration: 5ms for minimal latency
+        do {
+            try audioSession.setPreferredIOBufferDuration(0.005)
+            log("Buffer duration set to 5ms", level: .info)
+        } catch {
+            log("Failed to set buffer duration: \(error)", level: .error)
+            throw NSError(
+                domain: "AudioEngineManager",
+                code: -1,
+                userInfo: [
+                    NSLocalizedDescriptionKey: "Failed to set buffer duration: \(error.localizedDescription)"
+                ]
+            )
         }
         
-        // Ensure audio engine is prepared (required before installing tap)
-        // This is safe to call multiple times
-        // On simulator, prepare may have been skipped during initialization
-        if !audioEngine.isRunning {
+        // Sample rate: 16kHz is sufficient for speech
+        do {
+            try audioSession.setPreferredSampleRate(16000)
+            log("Sample rate set to 16kHz", level: .info)
+        } catch {
+            log("Failed to set sample rate: \(error)", level: .error)
+            throw NSError(
+                domain: "AudioEngineManager",
+                code: -1,
+                userInfo: [
+                    NSLocalizedDescriptionKey: "Failed to set sample rate: \(error.localizedDescription)"
+                ]
+            )
+        }
+        
+        // Activate session - this is critical and must succeed
+        // Verify permission is granted before activation
+        log("Preparing to activate audio session...", level: .info)
+        let preActivationPermission = audioSession.recordPermission
+        log("Pre-activation permission check: \(preActivationPermission)", level: .info)
+        guard preActivationPermission == .granted else {
+            log("ERROR: Cannot activate audio session - permission not granted (status: \(preActivationPermission))", level: .error)
+            logAudioSessionState("pre-activation-failed")
+            throw NSError(
+                domain: "AudioEngineManager",
+                code: -1,
+                userInfo: [
+                    NSLocalizedDescriptionKey: "Cannot activate audio session: microphone permission not granted (status: \(preActivationPermission))"
+                ]
+            )
+        }
+        
+        log("Activating audio session...", level: .info)
+        let activationStartTime = CFAbsoluteTimeGetCurrent()
+        do {
+            try audioSession.setActive(true)
+            let activationDuration = (CFAbsoluteTimeGetCurrent() - activationStartTime) * 1000
+            log("Audio session activated successfully in \(String(format: "%.2f", activationDuration))ms", level: .info)
+            logAudioSessionState("after-activation")
+        } catch {
+            let activationDuration = (CFAbsoluteTimeGetCurrent() - activationStartTime) * 1000
+            log("FAILED to activate audio session after \(String(format: "%.2f", activationDuration))ms: \(error)", level: .error)
+            log("Error type: \(type(of: error))", level: .error)
+            log("Error domain: \((error as NSError).domain)", level: .error)
+            log("Error code: \((error as NSError).code)", level: .error)
+            log("Error userInfo: \((error as NSError).userInfo)", level: .error)
+            logAudioSessionState("activation-failed")
+            
+            // Check if another app is using audio
+            if audioSession.isOtherAudioPlaying {
+                log("Another app is using audio", level: .error)
+                throw NSError(
+                    domain: "AudioEngineManager",
+                    code: -1,
+                    userInfo: [
+                        NSLocalizedDescriptionKey: "Cannot activate audio session: another app is using the microphone. Please close other audio apps and try again."
+                    ]
+                )
+            }
+            
+            throw NSError(
+                domain: "AudioEngineManager",
+                code: -1,
+                userInfo: [
+                    NSLocalizedDescriptionKey: "Failed to activate audio session: \(error.localizedDescription). Please ensure microphone permission is granted and no other app is using the microphone."
+                ]
+            )
+        }
+        
+        let configDuration = (CFAbsoluteTimeGetCurrent() - sessionStartTime) * 1000
+        log("Audio session configuration completed in \(String(format: "%.2f", configDuration))ms", level: .info)
+        logEvent("audio_session_config_complete", metadata: ["duration_ms": configDuration])
+        
+        // Prepare audio engine (required before installing tap)
+        // This must be done after audio session is activated and permission is granted
+        log("Preparing audio engine...", level: .info)
+        let prepareStartTime = CFAbsoluteTimeGetCurrent()
+        do {
             try prepareAudioEngineWithPermissionCheck()
+            let prepareDuration = (CFAbsoluteTimeGetCurrent() - prepareStartTime) * 1000
+            log("Audio engine prepared successfully in \(String(format: "%.2f", prepareDuration))ms", level: .info)
+            logAudioEngineState("after-prepare")
+        } catch {
+            let prepareDuration = (CFAbsoluteTimeGetCurrent() - prepareStartTime) * 1000
+            log("FAILED to prepare audio engine after \(String(format: "%.2f", prepareDuration))ms: \(error)", level: .error)
+            log("Error type: \(type(of: error))", level: .error)
+            log("Error domain: \((error as NSError).domain)", level: .error)
+            log("Error code: \((error as NSError).code)", level: .error)
+            logAudioEngineState("prepare-failed")
+            throw NSError(
+                domain: "AudioEngineManager",
+                code: -1,
+                userInfo: [
+                    NSLocalizedDescriptionKey: "Failed to prepare audio engine: \(error.localizedDescription)"
+                ]
+            )
         }
         
+        // Install tap (must be done after engine is prepared but before it starts)
+        log("Installing audio tap...", level: .info)
         let tapStartTime = CFAbsoluteTimeGetCurrent()
         installAudioTap()
         let tapDuration = (CFAbsoluteTimeGetCurrent() - tapStartTime) * 1000
+        log("Audio tap installed in \(String(format: "%.2f", tapDuration))ms", level: .info)
         logEvent("audio_tap_install", metadata: ["duration_ms": tapDuration])
         
+        // Verify audio session state before starting engine
+        log("Performing pre-start verification...", level: .info)
+        let sessionIsActive = !audioSession.isOtherAudioPlaying
+        let permissionIsGranted = audioSession.recordPermission == .granted
+        let categoryIsCorrect = audioSession.category == .record
+        let engineIsPrepared = audioEngine.inputNode.inputFormat(forBus: 0).sampleRate > 0
+        
+        log("Pre-start verification results:", level: .info)
+        log("  - Permission granted: \(permissionIsGranted)", level: .info)
+        log("  - Session active: \(sessionIsActive)", level: .info)
+        log("  - Category correct: \(categoryIsCorrect)", level: .info)
+        log("  - Engine prepared: \(engineIsPrepared)", level: .info)
+        log("  - Engine running: \(audioEngine.isRunning)", level: .info)
+        logAudioSessionState("pre-start")
+        logAudioEngineState("pre-start")
+        
+        guard permissionIsGranted else {
+            log("ERROR: Permission not granted in pre-start check", level: .error)
+            throw NSError(
+                domain: "AudioEngineManager",
+                code: -1,
+                userInfo: [
+                    NSLocalizedDescriptionKey: "Cannot start audio engine: microphone permission not granted (status: \(audioSession.recordPermission))"
+                ]
+            )
+        }
+        
+        guard sessionIsActive else {
+            log("ERROR: Session not active in pre-start check", level: .error)
+            throw NSError(
+                domain: "AudioEngineManager",
+                code: -1,
+                userInfo: [
+                    NSLocalizedDescriptionKey: "Cannot start audio engine: audio session is not active. Another app may be using the microphone."
+                ]
+            )
+        }
+        
         // Start the audio engine
+        log("Starting audio engine...", level: .info)
         let engineStartTime = CFAbsoluteTimeGetCurrent()
-        try audioEngine.start()
-        let engineDuration = (CFAbsoluteTimeGetCurrent() - engineStartTime) * 1000
-        logEvent("audio_engine_start", metadata: ["duration_ms": engineDuration])
+        do {
+            try audioEngine.start()
+            let engineDuration = (CFAbsoluteTimeGetCurrent() - engineStartTime) * 1000
+            let totalDuration = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
+            log("Audio engine started successfully in \(String(format: "%.2f", engineDuration))ms", level: .info)
+            log("Total startRecording duration: \(String(format: "%.2f", totalDuration))ms", level: .info)
+            log("Audio engine is running: \(audioEngine.isRunning)", level: .info)
+            logAudioEngineState("after-start")
+            logAudioSessionState("after-start")
+            logEvent("audio_engine_start", metadata: ["duration_ms": engineDuration])
+        } catch {
+            let engineDuration = (CFAbsoluteTimeGetCurrent() - engineStartTime) * 1000
+            let totalDuration = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
+            log("ERROR: Audio engine start FAILED after \(String(format: "%.2f", engineDuration))ms", level: .error)
+            log("Total startRecording duration before failure: \(String(format: "%.2f", totalDuration))ms", level: .error)
+            log("Error: \(error)", level: .error)
+            log("Error type: \(type(of: error))", level: .error)
+            log("Error domain: \((error as NSError).domain)", level: .error)
+            log("Error code: \((error as NSError).code)", level: .error)
+            log("Error userInfo: \((error as NSError).userInfo)", level: .error)
+            log("Error localizedDescription: \(error.localizedDescription)", level: .error)
+            log("Permission status: \(audioSession.recordPermission)", level: .error)
+            log("Audio session category: \(audioSession.category.rawValue)", level: .error)
+            log("Audio session is active: \(!audioSession.isOtherAudioPlaying)", level: .error)
+            log("Audio engine is running: \(audioEngine.isRunning)", level: .error)
+            log("Audio engine is prepared: \(audioEngine.inputNode.inputFormat(forBus: 0).sampleRate > 0)", level: .error)
+            logAudioSessionState("start-failed")
+            logAudioEngineState("start-failed")
+            
+            logEvent("audio_engine_start_failed", metadata: [
+                "duration_ms": engineDuration,
+                "error": error.localizedDescription,
+                "permission": "\(audioSession.recordPermission)",
+                "category": audioSession.category.rawValue,
+                "session_active": !audioSession.isOtherAudioPlaying
+            ])
+            
+            // Provide more detailed error message based on the error
+            var errorMessage = "Audio engine failed to start: \(error.localizedDescription)"
+            
+            // Add specific guidance based on common failure scenarios
+            if !permissionIsGranted {
+                errorMessage += " Microphone permission is not granted. Please grant microphone access in Settings."
+            } else if !sessionIsActive {
+                errorMessage += " Audio session is not active. Another app may be using the microphone."
+            } else {
+                errorMessage += " Please ensure microphone permission is granted and no other app is using the microphone."
+            }
+            
+            log("=== START RECORDING FAILED ===", level: .error)
+            throw NSError(
+                domain: "AudioEngineManager",
+                code: -1,
+                userInfo: [
+                    NSLocalizedDescriptionKey: errorMessage
+                ]
+            )
+        }
         
         state = .recording
         
         let totalDuration = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
+        log("=== START RECORDING COMPLETE in \(String(format: "%.2f", totalDuration))ms ===", level: .info)
         logEvent("start_recording_complete", metadata: ["total_duration_ms": totalDuration])
     }
     
@@ -447,16 +812,68 @@ class AudioEngineManager {
     
     // MARK: - Logging
     
+    /// Comprehensive logging function that ensures logs are visible in both Xcode and Flutter console.
+    /// Uses print() which is captured by both Xcode console and Flutter's stdout.
+    private func log(_ message: String, level: LogLevel = .info, file: String = #file, function: String = #function, line: Int = #line) {
+        let fileName = (file as NSString).lastPathComponent
+        let timestamp = String(format: "%.3f", CFAbsoluteTimeGetCurrent())
+        let threadName = Thread.isMainThread ? "MAIN" : "BG"
+        let logMessage = "[\(timestamp)] [AudioEngineManager] [\(level.rawValue)] [\(threadName)] \(fileName):\(line) \(function) - \(message)"
+        print(logMessage)
+        
+        // Also log to system console for Xcode
+        NSLog("%@", logMessage)
+    }
+    
+    private enum LogLevel: String {
+        case debug = "DEBUG"
+        case info = "INFO"
+        case warning = "WARN"
+        case error = "ERROR"
+    }
+    
     /// Logs events with metadata for performance monitoring and debugging.
     /// - Parameters:
     ///   - event: Event name
     ///   - metadata: Additional metadata dictionary
     private func logEvent(_ event: String, metadata: [String: Any] = [:]) {
-        #if DEBUG
         let metadataString = metadata.map { "\($0.key)=\($0.value)" }.joined(separator: ", ")
-        print("[AudioEngineManager] \(event): \(metadataString)")
-        #endif
-        // In production, this could send to analytics or crash reporting
+        log("\(event): \(metadataString)", level: .info)
+    }
+    
+    /// Logs detailed audio session state for debugging.
+    private func logAudioSessionState(_ context: String) {
+        let permission = audioSession.recordPermission
+        let category = audioSession.category
+        let mode = audioSession.mode
+        let isActive = !audioSession.isOtherAudioPlaying
+        let sampleRate = audioSession.sampleRate
+        let bufferDuration = audioSession.ioBufferDuration
+        let inputAvailable = audioSession.isInputAvailable
+        
+        log("Audio Session State [\(context)]:", level: .debug)
+        log("  - Permission: \(permission)", level: .debug)
+        log("  - Category: \(category.rawValue)", level: .debug)
+        log("  - Mode: \(mode.rawValue)", level: .debug)
+        log("  - Active: \(isActive)", level: .debug)
+        log("  - Sample Rate: \(sampleRate) Hz", level: .debug)
+        log("  - Buffer Duration: \(bufferDuration * 1000)ms", level: .debug)
+        log("  - Input Available: \(inputAvailable)", level: .debug)
+        log("  - Other Audio Playing: \(audioSession.isOtherAudioPlaying)", level: .debug)
+    }
+    
+    /// Logs detailed audio engine state for debugging.
+    private func logAudioEngineState(_ context: String) {
+        let isRunning = audioEngine.isRunning
+        let isPrepared = audioEngine.inputNode.inputFormat(forBus: 0).sampleRate > 0
+        let inputFormat = audioEngine.inputNode.inputFormat(forBus: 0)
+        
+        log("Audio Engine State [\(context)]:", level: .debug)
+        log("  - Running: \(isRunning)", level: .debug)
+        log("  - Prepared: \(isPrepared)", level: .debug)
+        log("  - Input Format Sample Rate: \(inputFormat.sampleRate) Hz", level: .debug)
+        log("  - Input Format Channels: \(inputFormat.channelCount)", level: .debug)
+        log("  - Manager State: \(state)", level: .debug)
     }
     
     // MARK: - State Queries

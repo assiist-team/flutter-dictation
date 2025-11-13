@@ -102,8 +102,9 @@ class SpeechRecognizerManager {
     // MARK: - Recognition Control
     
     /// Starts speech recognition with the provided audio engine.
-    /// Uses parallel start strategy - recognition starts immediately after audio engine.
-    /// - Parameter audioEngine: The AVAudioEngine instance to attach to
+    /// Uses shared buffer approach - receives buffers from AudioEngineManager instead of installing its own tap.
+    /// AVAudioEngine only supports one tap per bus, so we must share the tap installed by AudioEngineManager.
+    /// - Parameter audioEngine: The AVAudioEngine instance (used for format info, but tap is shared via buffer callback)
     /// - Throws: Recognition start errors
     func startRecognition(audioEngine: AVAudioEngine) async throws {
         let startTime = CFAbsoluteTimeGetCurrent()
@@ -151,23 +152,12 @@ class SpeechRecognizerManager {
         // Task hint for dictation
         recognitionRequest.taskHint = .dictation
         
-        // Attach audio engine's input node
-        let tapStartTime = CFAbsoluteTimeGetCurrent()
+        // Note: We do NOT install a tap here because AVAudioEngine only supports ONE tap per bus.
+        // AudioEngineManager already installs a tap on bus 0 for waveform visualization.
+        // We will receive buffers via setBufferCallback() which is set up by DictationManager.
+        // The buffer callback will append buffers to the recognition request.
         let inputNode = audioEngine.inputNode
         currentInputNode = inputNode
-        let recordingFormat = inputNode.outputFormat(forBus: 0)
-        
-        // Install tap on the same bus as waveform (dual taps supported by AVAudioEngine)
-        // Each tap receives a copy of the buffer, so both waveform and recognition can process it
-        inputNode.installTap(
-            onBus: 0,
-            bufferSize: 1024,
-            format: recordingFormat
-        ) { [weak self] buffer, _ in
-            self?.recognitionRequest?.append(buffer)
-        }
-        let tapDuration = (CFAbsoluteTimeGetCurrent() - tapStartTime) * 1000
-        logEvent("recognition_tap_install", metadata: ["duration_ms": tapDuration])
         
         // Start recognition task
         let taskStartTime = CFAbsoluteTimeGetCurrent()
@@ -187,6 +177,20 @@ class SpeechRecognizerManager {
         
         let totalDuration = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
         logEvent("start_recognition_complete", metadata: ["total_duration_ms": totalDuration])
+    }
+    
+    /// Appends an audio buffer to the recognition request.
+    /// This is called by AudioEngineManager's buffer callback to share audio buffers.
+    /// - Parameter buffer: The audio PCM buffer to append
+    func appendAudioBuffer(_ buffer: AVAudioPCMBuffer) {
+        // Thread-safe state check
+        let shouldAppend = stateQueue.sync {
+            return self.state == .listening || self.state == .initializing
+        }
+        guard shouldAppend else {
+            return
+        }
+        recognitionRequest?.append(buffer)
     }
     
     /// Stops speech recognition gracefully.
@@ -233,10 +237,8 @@ class SpeechRecognizerManager {
         recognitionRequest?.endAudio()
         recognitionRequest = nil
         
-        // Remove tap from audio node
-        if let inputNode = currentInputNode {
-            inputNode.removeTap(onBus: 0)
-        }
+        // Note: We do NOT remove the tap here because AudioEngineManager owns the tap.
+        // The tap will be removed when AudioEngineManager stops recording.
         currentInputNode = nil
         
         stateQueue.sync {

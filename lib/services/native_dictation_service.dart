@@ -15,34 +15,56 @@ class NativeDictationService {
   /// Should be called before starting to listen.
   /// Retries automatically if platform channels aren't ready yet.
   Future<void> initialize({int maxRetries = 10, Duration retryDelay = const Duration(milliseconds: 100)}) async {
+    final startTime = DateTime.now();
+    print('[NativeDictationService] === INITIALIZE START ===');
+    print('[NativeDictationService] Timestamp: ${startTime.millisecondsSinceEpoch}');
+    print('[NativeDictationService] Max retries: $maxRetries');
+    
     int retryCount = 0;
     
     while (retryCount < maxRetries) {
       try {
+        print('[NativeDictationService] Invoking initialize method channel (attempt ${retryCount + 1}/$maxRetries)...');
         await _methodChannel.invokeMethod('initialize');
+        final duration = DateTime.now().difference(startTime);
+        print('[NativeDictationService] === INITIALIZE COMPLETE in ${duration.inMilliseconds}ms ===');
         return; // Success, exit retry loop
       } on PlatformException catch (e) {
+        final duration = DateTime.now().difference(startTime);
+        print('[NativeDictationService] PlatformException during initialize after ${duration.inMilliseconds}ms');
+        print('[NativeDictationService] PlatformException code: ${e.code}');
+        print('[NativeDictationService] PlatformException message: ${e.message}');
+        print('[NativeDictationService] PlatformException details: ${e.details}');
         // Handle initialization errors from native code
         if (e.code == 'INIT_ERROR') {
           throw Exception('Failed to initialize dictation: ${e.message}');
         }
         rethrow;
-      } catch (e) {
+      } catch (e, stackTrace) {
+        final duration = DateTime.now().difference(startTime);
         // Handle MissingPluginException (channel not ready yet)
         // MissingPluginException is thrown when platform channel handler isn't registered
         final errorString = e.toString();
+        print('[NativeDictationService] Error during initialize after ${duration.inMilliseconds}ms: $e');
+        print('[NativeDictationService] Error string: $errorString');
+        print('[NativeDictationService] StackTrace: $stackTrace');
+        
         if (errorString.contains('MissingPluginException') || 
             errorString.contains('No implementation found')) {
           retryCount++;
+          print('[NativeDictationService] MissingPluginException detected, retry $retryCount/$maxRetries');
           if (retryCount < maxRetries) {
             // Wait before retrying
+            print('[NativeDictationService] Waiting ${retryDelay.inMilliseconds}ms before retry...');
             await Future.delayed(retryDelay);
             continue;
           } else {
+            print('[NativeDictationService] === INITIALIZE FAILED after $maxRetries retries ===');
             throw Exception('Failed to initialize dictation: Platform channels not available after $maxRetries retries. Please ensure the app has been rebuilt after adding native code.');
           }
         }
         // Re-throw other errors
+        print('[NativeDictationService] === INITIALIZE FAILED (non-retryable error) ===');
         rethrow;
       }
     }
@@ -60,20 +82,41 @@ class NativeDictationService {
     required Function(double level) onAudioLevel,
     Function(String error)? onError,
   }) async {
+    final startTime = DateTime.now();
+    print('[NativeDictationService] === START LISTENING START ===');
+    print('[NativeDictationService] Timestamp: ${startTime.millisecondsSinceEpoch}');
+    
     // Set up event stream
+    print('[NativeDictationService] Setting up event stream...');
     _setupEventStream(
       onResult: onResult,
       onStatus: onStatus,
       onAudioLevel: onAudioLevel,
       onError: onError,
     );
+    print('[NativeDictationService] Event stream set up');
 
     try {
+      print('[NativeDictationService] Invoking startListening method channel...');
       await _methodChannel.invokeMethod('startListening');
+      final duration = DateTime.now().difference(startTime);
+      print('[NativeDictationService] === START LISTENING COMPLETE in ${duration.inMilliseconds}ms ===');
     } on PlatformException catch (e) {
+      final duration = DateTime.now().difference(startTime);
+      print('[NativeDictationService] === START LISTENING FAILED after ${duration.inMilliseconds}ms ===');
+      print('[NativeDictationService] PlatformException code: ${e.code}');
+      print('[NativeDictationService] PlatformException message: ${e.message}');
+      print('[NativeDictationService] PlatformException details: ${e.details}');
+      print('[NativeDictationService] PlatformException stacktrace: ${e.stacktrace}');
       if (e.code == 'START_ERROR') {
         throw Exception('Failed to start listening: ${e.message}');
       }
+      rethrow;
+    } catch (e, stackTrace) {
+      final duration = DateTime.now().difference(startTime);
+      print('[NativeDictationService] === START LISTENING FAILED after ${duration.inMilliseconds}ms ===');
+      print('[NativeDictationService] Error: $e');
+      print('[NativeDictationService] StackTrace: $stackTrace');
       rethrow;
     }
   }

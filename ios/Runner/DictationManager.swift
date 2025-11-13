@@ -70,6 +70,11 @@ class DictationManager: NSObject, FlutterStreamHandler {
     // MARK: - Method Channel Handler
     
     func handleMethodCall(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+        log("=== METHOD CALL: \(call.method) ===", level: .info)
+        log("Arguments: \(call.arguments ?? "nil")", level: .debug)
+        log("Current thread: \(Thread.isMainThread ? "MAIN" : "BACKGROUND")", level: .debug)
+        log("Current state: \(state)", level: .debug)
+        
         switch call.method {
         case "initialize":
             handleInitialize(result: result)
@@ -87,6 +92,7 @@ class DictationManager: NSObject, FlutterStreamHandler {
             handleGetAudioLevel(result: result)
             
         default:
+            log("Unknown method: \(call.method)", level: .warning)
             result(FlutterMethodNotImplemented)
         }
     }
@@ -95,34 +101,47 @@ class DictationManager: NSObject, FlutterStreamHandler {
     
     private func handleInitialize(result: @escaping FlutterResult) {
         let startTime = CFAbsoluteTimeGetCurrent()
+        log("=== INITIALIZE START ===", level: .info)
+        log("Current state: \(state)", level: .info)
         
         Task {
             do {
                 // Initialize audio engine
+                log("Initializing audio engine...", level: .info)
                 let audioEngineStartTime = CFAbsoluteTimeGetCurrent()
                 try audioEngineManager.initialize()
                 let audioEngineDuration = (CFAbsoluteTimeGetCurrent() - audioEngineStartTime) * 1000
+                log("Audio engine initialized in \(String(format: "%.2f", audioEngineDuration))ms", level: .info)
                 logEvent("audio_engine_init", metadata: ["duration_ms": audioEngineDuration])
                 
                 // Initialize speech recognizer
+                log("Initializing speech recognizer...", level: .info)
                 let recognizerStartTime = CFAbsoluteTimeGetCurrent()
                 try await speechRecognizerManager.initialize()
                 let recognizerDuration = (CFAbsoluteTimeGetCurrent() - recognizerStartTime) * 1000
+                log("Speech recognizer initialized in \(String(format: "%.2f", recognizerDuration))ms", level: .info)
                 logEvent("speech_recognizer_init", metadata: ["duration_ms": recognizerDuration])
                 
                 let totalDuration = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
+                log("=== INITIALIZE COMPLETE in \(String(format: "%.2f", totalDuration))ms ===", level: .info)
                 logEvent("initialize_complete", metadata: ["total_duration_ms": totalDuration])
                 
                 await MainActor.run {
                     self.stateQueue.sync {
                         self.state = .idle
                     }
+                    log("Sending 'ready' status to Flutter", level: .info)
                     self.sendStatus("ready")
                     result(nil)
                 }
             } catch {
                 let totalDuration = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
                 let dictationError = DictationError.from(error)
+                log("=== INITIALIZE FAILED after \(String(format: "%.2f", totalDuration))ms ===", level: .error)
+                log("Error: \(error)", level: .error)
+                log("Error type: \(type(of: error))", level: .error)
+                log("DictationError code: \(dictationError.code)", level: .error)
+                log("DictationError message: \(dictationError.localizedDescription)", level: .error)
                 logEvent("initialize_error", metadata: [
                     "duration_ms": totalDuration,
                     "error": dictationError.localizedDescription,
@@ -142,46 +161,78 @@ class DictationManager: NSObject, FlutterStreamHandler {
     
     private func handleStartListening(result: @escaping FlutterResult) {
         let startTime = CFAbsoluteTimeGetCurrent()
+        log("=== START LISTENING START ===", level: .info)
+        log("Current state: \(state)", level: .info)
+        log("Current thread before Task: \(Thread.isMainThread ? "MAIN" : "BACKGROUND")", level: .info)
         
-        Task {
+        // CRITICAL: Ensure we're on main thread to preserve user action context for permission dialogs
+        // iOS requires permission requests to be triggered directly from user actions on the main thread
+        Task { @MainActor in
+            log("Inside Task { @MainActor }, thread: \(Thread.isMainThread ? "MAIN" : "BACKGROUND")", level: .info)
+            
             do {
                 stateQueue.sync {
                     guard self.state == .idle || self.state == .stopped else {
+                        log("Cannot start listening - invalid state: \(self.state)", level: .warning)
                         return
                     }
                     self.state = .initializing
+                    log("State changed to: .initializing", level: .info)
                 }
                 
                 // Start audio engine first (now async due to permission checking)
+                // We're already on main thread, so permission request will preserve user action context
+                log("Starting audio engine...", level: .info)
                 let audioEngineStartTime = CFAbsoluteTimeGetCurrent()
                 try await audioEngineManager.startRecording()
                 let audioEngineDuration = (CFAbsoluteTimeGetCurrent() - audioEngineStartTime) * 1000
+                log("Audio engine started in \(String(format: "%.2f", audioEngineDuration))ms", level: .info)
                 logEvent("audio_engine_start", metadata: ["duration_ms": audioEngineDuration])
                 
+                // Set up buffer callback to share audio buffers with speech recognizer
+                // AVAudioEngine only supports one tap per bus, so we must share the tap installed by AudioEngineManager
+                log("Setting up buffer callback for speech recognition...", level: .info)
+                audioEngineManager.setBufferCallback { [weak self] buffer in
+                    self?.speechRecognizerManager.appendAudioBuffer(buffer)
+                }
+                
                 // Then start speech recognition
+                log("Starting speech recognition...", level: .info)
                 let recognizerStartTime = CFAbsoluteTimeGetCurrent()
                 try await speechRecognizerManager.startRecognition(
                     audioEngine: audioEngineManager.engine
                 )
                 let recognizerDuration = (CFAbsoluteTimeGetCurrent() - recognizerStartTime) * 1000
+                log("Speech recognizer started in \(String(format: "%.2f", recognizerDuration))ms", level: .info)
                 logEvent("speech_recognizer_start", metadata: ["duration_ms": recognizerDuration])
                 
                 // Start audio level streaming for waveform
+                log("Starting audio level streaming...", level: .info)
                 startAudioLevelStreaming()
                 
                 let totalDuration = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
+                log("=== START LISTENING COMPLETE in \(String(format: "%.2f", totalDuration))ms ===", level: .info)
                 logEvent("start_listening_complete", metadata: ["total_duration_ms": totalDuration])
                 
                 await MainActor.run {
                     self.stateQueue.sync {
                         self.state = .listening
                     }
+                    log("State changed to: .listening", level: .info)
+                    log("Sending 'listening' status to Flutter", level: .info)
                     self.sendStatus("listening")
                     result(nil)
                 }
             } catch {
                 let totalDuration = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
                 let dictationError = DictationError.from(error)
+                log("=== START LISTENING FAILED after \(String(format: "%.2f", totalDuration))ms ===", level: .error)
+                log("Error: \(error)", level: .error)
+                log("Error type: \(type(of: error))", level: .error)
+                log("Error domain: \((error as NSError).domain)", level: .error)
+                log("Error code: \((error as NSError).code)", level: .error)
+                log("DictationError code: \(dictationError.code)", level: .error)
+                log("DictationError message: \(dictationError.localizedDescription)", level: .error)
                 logEvent("start_listening_error", metadata: [
                     "duration_ms": totalDuration,
                     "error": dictationError.localizedDescription,
@@ -192,6 +243,8 @@ class DictationManager: NSObject, FlutterStreamHandler {
                     self.stateQueue.sync {
                         self.state = .stopped
                     }
+                    log("State changed to: .stopped", level: .info)
+                    log("Sending error to Flutter: \(dictationError.localizedDescription)", level: .error)
                     self.sendError(dictationError.localizedDescription)
                     result(FlutterError(
                         code: dictationError.code,
@@ -215,6 +268,9 @@ class DictationManager: NSObject, FlutterStreamHandler {
             
             // Stop audio level streaming
             stopAudioLevelStreaming()
+            
+            // Remove buffer callback (stops forwarding buffers to speech recognizer)
+            audioEngineManager.removeBufferCallback()
             
             // Stop speech recognition (will finalize result)
             speechRecognizerManager.stopRecognition()
@@ -243,6 +299,9 @@ class DictationManager: NSObject, FlutterStreamHandler {
             
             // Stop audio level streaming
             stopAudioLevelStreaming()
+            
+            // Remove buffer callback (stops forwarding buffers to speech recognizer)
+            audioEngineManager.removeBufferCallback()
             
             // Cancel speech recognition
             speechRecognizerManager.cancelRecognition()
@@ -379,16 +438,30 @@ class DictationManager: NSObject, FlutterStreamHandler {
     
     // MARK: - Logging
     
+    /// Comprehensive logging function that ensures logs are visible in both Xcode and Flutter console.
+    private func log(_ message: String, level: LogLevel = .info, file: String = #file, function: String = #function, line: Int = #line) {
+        let fileName = (file as NSString).lastPathComponent
+        let timestamp = String(format: "%.3f", CFAbsoluteTimeGetCurrent())
+        let threadName = Thread.isMainThread ? "MAIN" : "BG"
+        let logMessage = "[\(timestamp)] [DictationManager] [\(level.rawValue)] [\(threadName)] \(fileName):\(line) \(function) - \(message)"
+        print(logMessage)
+        NSLog("%@", logMessage)
+    }
+    
+    private enum LogLevel: String {
+        case debug = "DEBUG"
+        case info = "INFO"
+        case warning = "WARN"
+        case error = "ERROR"
+    }
+    
     /// Logs events with metadata for performance monitoring and debugging.
     /// - Parameters:
     ///   - event: Event name
     ///   - metadata: Additional metadata dictionary
     private func logEvent(_ event: String, metadata: [String: Any] = [:]) {
-        #if DEBUG
         let metadataString = metadata.map { "\($0.key)=\($0.value)" }.joined(separator: ", ")
-        print("[DictationManager] \(event): \(metadataString)")
-        #endif
-        // In production, this could send to analytics or crash reporting
+        log("\(event): \(metadataString)", level: .info)
     }
     
     // MARK: - Cleanup
