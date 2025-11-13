@@ -20,6 +20,7 @@ class SpeechRecognizerManager {
     
     private var isAuthorized: Bool = false
     private weak var currentInputNode: AVAudioInputNode?
+    private var bufferCount: Int = 0  // Track buffer count for logging
     
     // MARK: - State Management
     
@@ -182,14 +183,58 @@ class SpeechRecognizerManager {
     /// This is called by AudioEngineManager's buffer callback to share audio buffers.
     /// - Parameter buffer: The audio PCM buffer to append
     func appendAudioBuffer(_ buffer: AVAudioPCMBuffer) {
+        // Track buffer count for logging
+        bufferCount += 1
+        
+        if bufferCount <= 5 {
+            print("[SpeechRecognizerManager] === appendAudioBuffer CALLED (buffer #\(bufferCount)) ===")
+            print("[SpeechRecognizerManager] Buffer frameLength: \(buffer.frameLength)")
+            print("[SpeechRecognizerManager] Buffer sampleRate: \(buffer.format.sampleRate)")
+        }
+        
         // Thread-safe state check
         let shouldAppend = stateQueue.sync {
-            return self.state == .listening || self.state == .initializing
+            let currentState = self.state
+            if bufferCount <= 5 {
+                print("[SpeechRecognizerManager] Current state: \(currentState)")
+                print("[SpeechRecognizerManager] Should append: \(currentState == .listening || currentState == .initializing)")
+            }
+            return currentState == .listening || currentState == .initializing
         }
         guard shouldAppend else {
+            if bufferCount <= 5 {
+                print("[SpeechRecognizerManager] WARNING: Skipping buffer append - state check failed")
+            } else if Int.random(in: 0..<100) == 0 {
+                logEvent("buffer_append_skipped", metadata: ["state": "\(stateQueue.sync { self.state })"])
+            }
             return
         }
-        recognitionRequest?.append(buffer)
+        
+        guard let request = recognitionRequest else {
+            if bufferCount <= 5 {
+                print("[SpeechRecognizerManager] ERROR: recognitionRequest is nil!")
+            } else if Int.random(in: 0..<100) == 0 {
+                logEvent("buffer_append_failed", metadata: ["reason": "recognitionRequest is nil"])
+            }
+            return
+        }
+        
+        if bufferCount <= 5 {
+            print("[SpeechRecognizerManager] Appending buffer to recognition request...")
+        }
+        request.append(buffer)
+        
+        if bufferCount <= 5 {
+            print("[SpeechRecognizerManager] Buffer appended successfully")
+        }
+        
+        // Log occasionally to confirm buffers are being received
+        if Int.random(in: 0..<1000) == 0 {
+            logEvent("buffer_appended", metadata: [
+                "frame_length": buffer.frameLength,
+                "sample_rate": buffer.format.sampleRate
+            ])
+        }
     }
     
     /// Stops speech recognition gracefully.
@@ -258,28 +303,37 @@ class SpeechRecognizerManager {
     
     private func handleRecognitionResult(result: SFSpeechRecognitionResult?, error: Error?) {
         if let error = error {
+            logEvent("recognition_error", metadata: ["error": "\(error)"])
             handleRecognitionError(error)
             return
         }
         
         guard let result = result else {
+            logEvent("recognition_result_nil", metadata: [:])
             return
         }
         
         // Track first result latency
+        let transcription = result.bestTranscription.formattedString
+        logEvent("recognition_result", metadata: [
+            "is_final": result.isFinal,
+            "text_length": transcription.count,
+            "text_preview": transcription.prefix(50)
+        ])
+        
         if resultCallback != nil {
-            let resultTime = CFAbsoluteTimeGetCurrent()
-            // Note: We can't easily track when recognition actually started processing,
-            // but we can log when results arrive
-            logEvent("recognition_result", metadata: [
+            logEvent("calling_result_callback", metadata: [
                 "is_final": result.isFinal,
-                "text_length": result.bestTranscription.formattedString.count
+                "text_length": transcription.count
+            ])
+            // Send partial results immediately
+            resultCallback?(transcription, result.isFinal)
+        } else {
+            logEvent("result_callback_is_nil", metadata: [
+                "is_final": result.isFinal,
+                "text_length": transcription.count
             ])
         }
-        
-        // Send partial results immediately
-        let transcription = result.bestTranscription.formattedString
-        resultCallback?(transcription, result.isFinal)
         
         // Update status
         if result.isFinal {

@@ -160,28 +160,42 @@ class NativeDictationService {
     // Cancel existing subscription if any
     _eventSubscription?.cancel();
 
+    print('[NativeDictationService] Creating event stream subscription...');
     _eventSubscription = _eventChannel.receiveBroadcastStream().listen(
       (dynamic event) {
+        print('[NativeDictationService] === EVENT RECEIVED ===');
+        print('[NativeDictationService] Event data: $event');
         final Map<String, dynamic> data = Map<String, dynamic>.from(event);
+        print('[NativeDictationService] Event type: ${data['type']}');
 
         switch (data['type']) {
           case 'result':
-            onResult(data['text'] as String, data['isFinal'] as bool);
+            final text = data['text'] as String;
+            final isFinal = data['isFinal'] as bool;
+            print('[NativeDictationService] Processing result event: text="$text", isFinal=$isFinal');
+            onResult(text, isFinal);
             break;
 
           case 'status':
-            onStatus(data['status'] as String);
+            final status = data['status'] as String;
+            print('[NativeDictationService] Processing status event: status="$status"');
+            onStatus(status);
             break;
 
           case 'audioLevel':
             final level = data['level'];
             if (level is num) {
-              onAudioLevel(level.toDouble());
+              final levelValue = level.toDouble();
+              print('[NativeDictationService] Processing audioLevel event: level=$levelValue');
+              onAudioLevel(levelValue);
+            } else {
+              print('[NativeDictationService] WARNING: audioLevel event has invalid level type: ${level.runtimeType}');
             }
             break;
 
           case 'error':
             final errorMessage = data['message'] as String? ?? 'Unknown error';
+            print('[NativeDictationService] Processing error event: message="$errorMessage"');
             if (onError != null) {
               onError(errorMessage);
             } else {
@@ -190,19 +204,22 @@ class NativeDictationService {
             break;
 
           default:
-            print('Unknown event type: ${data['type']}');
+            print('[NativeDictationService] WARNING: Unknown event type: ${data['type']}');
         }
       },
       onError: (error) {
         final errorMessage = error.toString();
+        print('[NativeDictationService] === EVENT STREAM ERROR ===');
+        print('[NativeDictationService] Error: $errorMessage');
         if (onError != null) {
           onError(errorMessage);
         } else {
-          print('Event stream error: $errorMessage');
+          print('[NativeDictationService] No error handler, printing error');
         }
       },
       cancelOnError: false,
     );
+    print('[NativeDictationService] Event stream subscription created successfully');
   }
 
   /// Dispose of resources and cancel event subscriptions.

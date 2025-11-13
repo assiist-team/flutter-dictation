@@ -58,12 +58,18 @@ class DictationManager: NSObject, FlutterStreamHandler {
     // MARK: - FlutterStreamHandler
     
     func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? {
+        log("=== EVENT STREAM LISTEN START ===", level: .info)
+        log("Arguments: \(arguments ?? "nil")", level: .debug)
         self.eventSink = events
+        log("Event sink set successfully", level: .info)
+        log("=== EVENT STREAM LISTEN COMPLETE ===", level: .info)
         return nil
     }
     
     func onCancel(withArguments arguments: Any?) -> FlutterError? {
+        log("=== EVENT STREAM CANCEL ===", level: .info)
         self.eventSink = nil
+        log("Event sink cleared", level: .info)
         return nil
     }
     
@@ -192,9 +198,21 @@ class DictationManager: NSObject, FlutterStreamHandler {
                 // Set up buffer callback to share audio buffers with speech recognizer
                 // AVAudioEngine only supports one tap per bus, so we must share the tap installed by AudioEngineManager
                 log("Setting up buffer callback for speech recognition...", level: .info)
+                log("About to call setBufferCallback", level: .info)
                 audioEngineManager.setBufferCallback { [weak self] buffer in
-                    self?.speechRecognizerManager.appendAudioBuffer(buffer)
+                    log("=== BUFFER CALLBACK INVOKED ===", level: .info)
+                    log("Buffer frameLength: \(buffer.frameLength)", level: .info)
+                    log("Buffer sampleRate: \(buffer.format.sampleRate)", level: .info)
+                    log("self is nil: \(self == nil)", level: .info)
+                    guard let self = self else {
+                        log("ERROR: self is nil in buffer callback", level: .error)
+                        return
+                    }
+                    log("Calling speechRecognizerManager.appendAudioBuffer", level: .info)
+                    self.speechRecognizerManager.appendAudioBuffer(buffer)
+                    log("speechRecognizerManager.appendAudioBuffer completed", level: .info)
                 }
+                log("Buffer callback set successfully", level: .info)
                 
                 // Then start speech recognition
                 log("Starting speech recognition...", level: .info)
@@ -207,8 +225,40 @@ class DictationManager: NSObject, FlutterStreamHandler {
                 logEvent("speech_recognizer_start", metadata: ["duration_ms": recognizerDuration])
                 
                 // Start audio level streaming for waveform
+                print("🔴 LINE 228: Starting audio level streaming...")
+                NSLog("🔴 LINE 228: Starting audio level streaming...")
                 log("Starting audio level streaming...", level: .info)
-                startAudioLevelStreaming()
+                
+                print("🔴 LINE 229: About to call startAudioLevelStreaming()")
+                NSLog("🔴 LINE 229: About to call startAudioLevelStreaming()")
+                log("About to call startAudioLevelStreaming()", level: .info)
+                
+                print("🔴 LINE 230: Current thread: \(Thread.isMainThread ? "MAIN" : "BACKGROUND")")
+                NSLog("🔴 LINE 230: Current thread: \(Thread.isMainThread ? "MAIN" : "BACKGROUND")")
+                log("Current thread: \(Thread.isMainThread ? "MAIN" : "BACKGROUND")", level: .info)
+                
+                print("🔴 LINE 231: About to invoke startAudioLevelStreaming() - this log should appear")
+                NSLog("🔴 LINE 231: About to invoke startAudioLevelStreaming() - this log should appear")
+                log("About to invoke startAudioLevelStreaming() - this log should appear", level: .info)
+                
+                print("🔴 LINE 232: Entering do block")
+                NSLog("🔴 LINE 232: Entering do block")
+                do {
+                    print("🔴 LINE 233: About to call startAudioLevelStreaming() function")
+                    NSLog("🔴 LINE 233: About to call startAudioLevelStreaming() function")
+                    startAudioLevelStreaming()
+                    print("🔴 LINE 234: startAudioLevelStreaming() call completed successfully")
+                    NSLog("🔴 LINE 234: startAudioLevelStreaming() call completed successfully")
+                    log("startAudioLevelStreaming() call completed successfully", level: .info)
+                } catch {
+                    print("🔴 LINE 236: ERROR: Exception caught in startAudioLevelStreaming(): \(error)")
+                    NSLog("🔴 LINE 236: ERROR: Exception caught in startAudioLevelStreaming(): \(error)")
+                    log("ERROR: Exception caught in startAudioLevelStreaming(): \(error)", level: .error)
+                    log("Error type: \(type(of: error))", level: .error)
+                }
+                print("🔴 LINE 239: After startAudioLevelStreaming() call - this log should also appear")
+                NSLog("🔴 LINE 239: After startAudioLevelStreaming() call - this log should also appear")
+                log("After startAudioLevelStreaming() call - this log should also appear", level: .info)
                 
                 let totalDuration = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
                 log("=== START LISTENING COMPLETE in \(String(format: "%.2f", totalDuration))ms ===", level: .info)
@@ -345,7 +395,13 @@ class DictationManager: NSObject, FlutterStreamHandler {
             "text": text,
             "isFinal": isFinal
         ]
-        eventSink?(event)
+        log("Sending result event: text=\"\(text)\", isFinal=\(isFinal)", level: .info)
+        if let sink = eventSink {
+            sink(event)
+            log("Result event sent successfully", level: .debug)
+        } else {
+            log("ERROR: Cannot send result event - eventSink is nil!", level: .error)
+        }
     }
     
     private func sendStatus(_ status: String) {
@@ -353,7 +409,13 @@ class DictationManager: NSObject, FlutterStreamHandler {
             "type": "status",
             "status": status
         ]
-        eventSink?(event)
+        log("Sending status event: status=\"\(status)\"", level: .info)
+        if let sink = eventSink {
+            sink(event)
+            log("Status event sent successfully", level: .debug)
+        } else {
+            log("ERROR: Cannot send status event - eventSink is nil!", level: .error)
+        }
     }
     
     private func sendAudioLevel(_ level: Float) {
@@ -361,7 +423,18 @@ class DictationManager: NSObject, FlutterStreamHandler {
             "type": "audioLevel",
             "level": level
         ]
-        eventSink?(event)
+        // Only log audio level events occasionally to avoid spam (every 10th event)
+        if Int.random(in: 0..<10) == 0 {
+            log("Sending audioLevel event: level=\(level)", level: .debug)
+        }
+        if let sink = eventSink {
+            sink(event)
+        } else {
+            // Only log error occasionally to avoid spam
+            if Int.random(in: 0..<100) == 0 {
+                log("ERROR: Cannot send audioLevel event - eventSink is nil!", level: .error)
+            }
+        }
     }
     
     private func sendError(_ message: String) {
@@ -369,30 +442,68 @@ class DictationManager: NSObject, FlutterStreamHandler {
             "type": "error",
             "message": message
         ]
-        eventSink?(event)
+        log("Sending error event: message=\"\(message)\"", level: .error)
+        if let sink = eventSink {
+            sink(event)
+            log("Error event sent successfully", level: .debug)
+        } else {
+            log("ERROR: Cannot send error event - eventSink is nil!", level: .error)
+        }
     }
     
     // MARK: - Audio Level Streaming
     
     private func startAudioLevelStreaming() {
+        // CRITICAL DEBUG: Direct print to verify function is called
+        // Using multiple print methods to ensure visibility
+        print("🔴🔴🔴 CRITICAL LINE 456: startAudioLevelStreaming() FUNCTION ENTRY - THIS MUST APPEAR 🔴🔴🔴")
+        NSLog("🔴🔴🔴 CRITICAL LINE 456: startAudioLevelStreaming() FUNCTION ENTRY - THIS MUST APPEAR 🔴🔴🔴")
+        
+        log("=== START AUDIO LEVEL STREAMING ===", level: .info)
+        log("Function entry - thread: \(Thread.isMainThread ? "MAIN" : "BACKGROUND")", level: .info)
+        log("About to enter audioLevelQueue.sync", level: .info)
+        
         audioLevelQueue.sync {
-            guard !isStreamingAudioLevels else { return }
+            log("Inside audioLevelQueue.sync block", level: .info)
+            log("isStreamingAudioLevels before check: \(self.isStreamingAudioLevels)", level: .info)
+            guard !isStreamingAudioLevels else {
+                log("Already streaming audio levels, returning early", level: .warning)
+                return
+            }
             isStreamingAudioLevels = true
+            log("Set isStreamingAudioLevels = true", level: .info)
         }
         
+        log("Exited audioLevelQueue.sync, about to call stopAudioLevelStreaming()", level: .info)
         stopAudioLevelStreaming() // Ensure no existing timer
+        log("stopAudioLevelStreaming() completed", level: .info)
         
         // Create timer on main thread for 60 FPS (every ~16ms)
+        log("About to dispatch to main queue", level: .info)
+        log("Current thread before dispatch: \(Thread.isMainThread ? "MAIN" : "BACKGROUND")", level: .info)
         DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
+            log("=== INSIDE MAIN QUEUE ASYNC BLOCK ===", level: .info)
+            log("Thread in async block: \(Thread.isMainThread ? "MAIN" : "BACKGROUND")", level: .info)
+            guard let self = self else {
+                log("ERROR: self is nil in startAudioLevelStreaming dispatch", level: .error)
+                return
+            }
+            log("self is not nil, continuing", level: .info)
             
             // Double-check we should still be streaming
+            log("About to check shouldStream", level: .info)
             let shouldStream = self.audioLevelQueue.sync {
+                log("Inside shouldStream check, isStreamingAudioLevels=\(self.isStreamingAudioLevels)", level: .info)
                 return self.isStreamingAudioLevels
             }
+            log("shouldStream result: \(shouldStream)", level: .info)
             
-            guard shouldStream else { return }
+            guard shouldStream else {
+                log("Should not stream, aborting timer creation", level: .warning)
+                return
+            }
             
+            log("Creating audio level timer (60 FPS, ~16ms interval)", level: .info)
             self.audioLevelTimer = Timer.scheduledTimer(withTimeInterval: 0.016, repeats: true) { [weak self] _ in
                 guard let self = self else { return }
                 
@@ -402,6 +513,7 @@ class DictationManager: NSObject, FlutterStreamHandler {
                 }
                 
                 guard shouldContinue else {
+                    log("Should not continue streaming, stopping timer", level: .info)
                     self.stopAudioLevelStreaming()
                     return
                 }
@@ -410,21 +522,32 @@ class DictationManager: NSObject, FlutterStreamHandler {
                 self.sendAudioLevel(level)
             }
             
+            log("Timer created, audioLevelTimer is nil: \(self.audioLevelTimer == nil)", level: .info)
+            
             // Add timer to main run loop to ensure it runs during UI interactions
             if let timer = self.audioLevelTimer {
                 RunLoop.main.add(timer, forMode: .common)
+                log("Audio level timer created and added to run loop", level: .info)
+            } else {
+                log("ERROR: Failed to create audio level timer!", level: .error)
             }
+            log("=== EXITING MAIN QUEUE ASYNC BLOCK ===", level: .info)
         }
+        log("Dispatched to main queue, about to exit function", level: .info)
+        log("=== START AUDIO LEVEL STREAMING COMPLETE ===", level: .info)
     }
     
     private func stopAudioLevelStreaming() {
+        log("=== STOP AUDIO LEVEL STREAMING ===", level: .info)
         audioLevelQueue.sync {
             isStreamingAudioLevels = false
         }
         
         DispatchQueue.main.async { [weak self] in
-            self?.audioLevelTimer?.invalidate()
-            self?.audioLevelTimer = nil
+            guard let self = self else { return }
+            self.audioLevelTimer?.invalidate()
+            self.audioLevelTimer = nil
+            self.log("Audio level timer invalidated and cleared", level: .info)
         }
     }
     

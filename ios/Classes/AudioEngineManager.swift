@@ -22,6 +22,7 @@ class AudioEngineManager {
     private var bufferCallback: ((AVAudioPCMBuffer) -> Void)?
     private var currentAudioLevel: Float = 0.0
     private var state: AudioEngineState = .idle
+    private var bufferCount: Int = 0  // Track buffer count for logging
     
     // Audio level smoothing for waveform visualization
     private let levelSmoothingFactor: Float = 0.3  // Smooth transitions
@@ -660,13 +661,29 @@ class AudioEngineManager {
     // MARK: - Buffer Processing
     
     private func processAudioBuffer(_ buffer: AVAudioPCMBuffer) {
+        // Log first few buffers to confirm tap is working
+        bufferCount += 1
+        if bufferCount <= 5 {
+            log("=== AUDIO TAP CALLBACK INVOKED (buffer #\(bufferCount)) ===", level: .info)
+            log("Buffer frameLength: \(buffer.frameLength)", level: .info)
+            log("Buffer sampleRate: \(buffer.format.sampleRate)", level: .info)
+            log("Current state: \(state)", level: .info)
+        }
+        
         // Only process buffers when actively recording
         guard state == .recording else {
+            if bufferCount <= 5 {
+                log("Skipping buffer processing - state is \(state), not .recording", level: .warning)
+            }
             return
         }
         
         // Calculate audio level for waveform visualization
         let newLevel = calculateAudioLevel(from: buffer)
+        
+        if bufferCount <= 5 {
+            log("Calculated audio level: \(newLevel)", level: .info)
+        }
         
         // Smooth the level to avoid jittery waveform
         audioLevelQueue.sync {
@@ -676,7 +693,23 @@ class AudioEngineManager {
         
         // Call buffer callback if set
         if let callback = bufferCallback {
+            if bufferCount <= 5 {
+                log("Calling buffer callback...", level: .info)
+            }
             callback(buffer)
+            if bufferCount <= 5 {
+                log("Buffer callback completed", level: .info)
+            }
+            // Log occasionally to confirm buffers are being processed
+            if Int.random(in: 0..<1000) == 0 {
+                log("Processed audio buffer: frameLength=\(buffer.frameLength), level=\(newLevel)", level: .debug)
+            }
+        } else {
+            if bufferCount <= 5 {
+                log("ERROR: Buffer callback is nil - buffers are not being forwarded!", level: .error)
+            } else if Int.random(in: 0..<1000) == 0 {
+                log("Buffer callback is nil - buffers are not being forwarded", level: .warning)
+            }
         }
     }
     
@@ -720,7 +753,9 @@ class AudioEngineManager {
     /// Sets a callback to receive audio buffers in real-time.
     /// - Parameter callback: Closure called with each audio buffer
     func setBufferCallback(_ callback: @escaping (AVAudioPCMBuffer) -> Void) {
+        log("setBufferCallback called", level: .info)
         bufferCallback = callback
+        log("bufferCallback set successfully, is nil: \(bufferCallback == nil)", level: .info)
     }
     
     /// Removes the buffer callback.

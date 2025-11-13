@@ -127,6 +127,8 @@ class _DictationExampleScreenState extends State<DictationExampleScreen> {
   }
 
   void _stopListening() async {
+    print('[ExampleApp] === STOP LISTENING CALLED ===');
+    print('[ExampleApp] Stack trace: ${StackTrace.current}');
     _recordingTimer?.cancel();
     if (mounted) {
       setState(() {
@@ -177,6 +179,8 @@ class _DictationExampleScreenState extends State<DictationExampleScreen> {
   }
 
   void _onStatusUpdate(String status) {
+    print('[ExampleApp] === STATUS UPDATE: $status ===');
+    print('[ExampleApp] Current _isListening state: $_isListening');
     if (mounted) {
       setState(() {
         _status = status;
@@ -197,14 +201,18 @@ class _DictationExampleScreenState extends State<DictationExampleScreen> {
   }
 
   void _handleMicPressed() async {
+    print('[ExampleApp] === MIC BUTTON PRESSED ===');
+    print('[ExampleApp] Current state: _isInitializing=$_isInitializing, _isListening=$_isListening');
     if (_isInitializing) {
       print("Still initializing speech recognition...");
       return;
     }
     if (!_isListening) {
+      print('[ExampleApp] Starting listening...');
       _startListening();
       _focusNode.requestFocus();
     } else {
+      print('[ExampleApp] Stopping listening...');
       _stopListening();
     }
   }
