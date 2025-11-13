@@ -23,6 +23,9 @@ class AudioEngineManager {
     private var currentAudioLevel: Float = 0.0
     private var state: AudioEngineState = .idle
     
+    // Audio level smoothing for waveform visualization
+    private let levelSmoothingFactor: Float = 0.3  // Smooth transitions
+    
     // Thread-safe audio level access
     private let audioLevelQueue = DispatchQueue(label: "com.flutterdictation.audioLevel")
     
@@ -160,10 +163,12 @@ class AudioEngineManager {
         }
         
         // Calculate audio level for waveform visualization
-        let level = calculateAudioLevel(from: buffer)
+        let newLevel = calculateAudioLevel(from: buffer)
         
+        // Smooth the level to avoid jittery waveform
         audioLevelQueue.sync {
-            self.currentAudioLevel = level
+            self.currentAudioLevel = self.currentAudioLevel * (1.0 - self.levelSmoothingFactor) +
+                                   newLevel * self.levelSmoothingFactor
         }
         
         // Call buffer callback if set
