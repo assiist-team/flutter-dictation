@@ -3,8 +3,9 @@ import UIKit
 
 @main
 @objc class AppDelegate: FlutterAppDelegate {
-  // Pre-warmed audio engine manager for low-latency recording
+  // Pre-warmed managers for low-latency recording and recognition
   private var audioEngineManager: AudioEngineManager?
+  private var speechRecognizerManager: SpeechRecognizerManager?
   
   override func application(
     _ application: UIApplication,
@@ -12,8 +13,9 @@ import UIKit
   ) -> Bool {
     GeneratedPluginRegistrant.register(with: self)
     
-    // Pre-warm audio engine at app launch for sub-100ms latency
+    // Pre-warm audio engine and speech recognizer at app launch for sub-100ms latency
     prewarmAudioEngine()
+    prewarmSpeechRecognizer()
     
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
@@ -29,6 +31,23 @@ import UIKit
       } catch {
         print("AudioEngineManager: Pre-warming failed: \(error)")
         // Non-critical error - audio engine can still be initialized later
+      }
+    }
+  }
+  
+  private func prewarmSpeechRecognizer() {
+    // Initialize speech recognizer on background queue to avoid blocking app launch
+    Task {
+      let manager = SpeechRecognizerManager()
+      do {
+        try await manager.initialize()
+        await MainActor.run {
+          self.speechRecognizerManager = manager
+        }
+        print("SpeechRecognizerManager: Pre-warmed successfully")
+      } catch {
+        print("SpeechRecognizerManager: Pre-warming failed: \(error)")
+        // Non-critical error - speech recognizer can still be initialized later
       }
     }
   }

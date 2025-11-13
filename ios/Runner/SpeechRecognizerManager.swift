@@ -1,0 +1,363 @@
+import AVFoundation
+import Foundation
+import Speech
+
+/// Manages SFSpeechRecognizer for low-latency speech recognition.
+/// Provides real-time partial results integrated with the audio engine.
+class SpeechRecognizerManager {
+    
+    // MARK: - Properties
+    
+    private var recognizer: SFSpeechRecognizer?
+    private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
+    private var recognitionTask: SFSpeechRecognitionTask?
+    
+    private var resultCallback: ((String, Bool) -> Void)?
+    private var statusCallback: ((String) -> Void)?
+    
+    private var state: RecognitionState = .idle
+    private let stateQueue = DispatchQueue(label: "com.flutterdictation.speechRecognizer.state")
+    
+    private var isAuthorized: Bool = false
+    private weak var currentInputNode: AVAudioInputNode?
+    
+    // MARK: - State Management
+    
+    enum RecognitionState {
+        case idle           // Ready but not active
+        case initializing   // Starting up
+        case listening      // Actively recognizing
+        case processing     // Finalizing result
+        case stopped        // Stopped, can restart
+        case cancelled      // Cancelled, needs reset
+    }
+    
+    // MARK: - Initialization
+    
+    /// Initializes the speech recognizer with optimal configuration for dictation.
+    /// Should be called at app launch for pre-warming.
+    /// - Throws: Initialization errors
+    func initialize() async throws {
+        // Check if already initialized
+        if recognizer != nil && isAuthorized {
+            return
+        }
+        
+        // Request authorization
+        let authorized = await requestAuthorization()
+        guard authorized else {
+            throw SpeechRecognizerError.notAuthorized
+        }
+        
+        // Create recognizer with English locale
+        recognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
+        
+        guard let recognizer = recognizer else {
+            throw SpeechRecognizerError.notAvailable
+        }
+        
+        // Configure for dictation (long-form speech)
+        recognizer.defaultTaskHint = .dictation
+        
+        // Enable on-device recognition if available (faster, more private)
+        if #available(iOS 13.0, *) {
+            recognizer.supportsOnDeviceRecognition = true
+        }
+        
+        // Check availability
+        guard recognizer.isAvailable else {
+            throw SpeechRecognizerError.notAvailable
+        }
+        
+        isAuthorized = true
+        stateQueue.sync {
+            self.state = .idle
+        }
+    }
+    
+    // MARK: - Authorization
+    
+    /// Requests speech recognition authorization.
+    /// - Returns: True if authorized, false otherwise
+    func requestAuthorization() async -> Bool {
+        let status = await SFSpeechRecognizer.requestAuthorization()
+        return status == .authorized
+    }
+    
+    // MARK: - Recognition Control
+    
+    /// Starts speech recognition with the provided audio engine.
+    /// Uses parallel start strategy - recognition starts immediately after audio engine.
+    /// - Parameter audioEngine: The AVAudioEngine instance to attach to
+    /// - Throws: Recognition start errors
+    func startRecognition(audioEngine: AVAudioEngine) async throws {
+        guard let recognizer = recognizer else {
+            throw SpeechRecognizerError.notInitialized
+        }
+        
+        guard recognizer.isAvailable else {
+            throw SpeechRecognizerError.notAvailable
+        }
+        
+        // Check authorization
+        guard isAuthorized else {
+            let authorized = await requestAuthorization()
+            guard authorized else {
+                throw SpeechRecognizerError.notAuthorized
+            }
+        }
+        
+        // Cancel any existing recognition task
+        cancelRecognition()
+        
+        stateQueue.sync {
+            self.state = .initializing
+        }
+        
+        // Create recognition request
+        recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
+        
+        guard let recognitionRequest = recognitionRequest else {
+            stateQueue.sync {
+                self.state = .idle
+            }
+            throw SpeechRecognizerError.requestCreationFailed
+        }
+        
+        // Configure for real-time results
+        recognitionRequest.shouldReportPartialResults = true
+        
+        // Task hint for dictation
+        recognitionRequest.taskHint = .dictation
+        
+        // Attach audio engine's input node
+        let inputNode = audioEngine.inputNode
+        currentInputNode = inputNode
+        let recordingFormat = inputNode.outputFormat(forBus: 0)
+        
+        // Install tap on the same bus as waveform (dual taps supported by AVAudioEngine)
+        // Each tap receives a copy of the buffer, so both waveform and recognition can process it
+        inputNode.installTap(
+            onBus: 0,
+            bufferSize: 1024,
+            format: recordingFormat
+        ) { [weak self] buffer, _ in
+            self?.recognitionRequest?.append(buffer)
+        }
+        
+        // Start recognition task
+        recognitionTask = recognizer.recognitionTask(
+            with: recognitionRequest
+        ) { [weak self] result, error in
+            self?.handleRecognitionResult(result: result, error: error)
+        }
+        
+        stateQueue.sync {
+            self.state = .listening
+        }
+        
+        statusCallback?("listening")
+    }
+    
+    /// Stops speech recognition gracefully.
+    /// Finalizes the current result and allows restart.
+    func stopRecognition() {
+        stateQueue.sync {
+            guard self.state == .listening || self.state == .initializing else {
+                return
+            }
+            self.state = .processing
+        }
+        
+        // Finish the recognition request (allows final result)
+        recognitionRequest?.endAudio()
+        
+        // Note: We don't remove the tap here because AVAudioEngine only supports one tap per bus.
+        // Removing it would also remove the waveform tap if AudioEngineManager is still recording.
+        // The tap will stop processing buffers once endAudio() is called, so it's safe to leave it.
+        // The tap will be cleaned up when the audio engine stops or when we cancel recognition.
+        
+        // Wait for final result, then update state
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            self?.stateQueue.sync {
+                self?.state = .stopped
+            }
+            self?.statusCallback?("stopped")
+        }
+    }
+    
+    /// Cancels speech recognition immediately.
+    /// Discards current results and resets state.
+    func cancelRecognition() {
+        stateQueue.sync {
+            guard self.state != .idle && self.state != .cancelled else {
+                return
+            }
+        }
+        
+        // Cancel recognition task
+        recognitionTask?.cancel()
+        recognitionTask = nil
+        
+        // Finish request to clean up
+        recognitionRequest?.endAudio()
+        recognitionRequest = nil
+        
+        // Remove tap from audio node
+        if let inputNode = currentInputNode {
+            inputNode.removeTap(onBus: 0)
+        }
+        currentInputNode = nil
+        
+        stateQueue.sync {
+            self.state = .cancelled
+        }
+        
+        // Reset to idle after a brief delay
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+            self?.stateQueue.sync {
+                self?.state = .idle
+            }
+        }
+        
+        statusCallback?("cancelled")
+    }
+    
+    // MARK: - Result Handling
+    
+    private func handleRecognitionResult(result: SFSpeechRecognitionResult?, error: Error?) {
+        if let error = error {
+            handleRecognitionError(error)
+            return
+        }
+        
+        guard let result = result else {
+            return
+        }
+        
+        // Send partial results immediately
+        let transcription = result.bestTranscription.formattedString
+        resultCallback?(transcription, result.isFinal)
+        
+        // Update status
+        if result.isFinal {
+            stateQueue.sync {
+                self.state = .processing
+            }
+            statusCallback?("done")
+            
+            // Transition to stopped after final result
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                self?.stateQueue.sync {
+                    self?.state = .stopped
+                }
+            }
+        } else {
+            stateQueue.sync {
+                if self.state != .listening {
+                    self.state = .listening
+                }
+            }
+            statusCallback?("listening")
+        }
+    }
+    
+    // MARK: - Error Handling
+    
+    private func handleRecognitionError(_ error: Error) {
+        if let speechError = error as? SFSpeechRecognizerError {
+            switch speechError {
+            case .notAuthorized:
+                isAuthorized = false
+                stateQueue.sync {
+                    self.state = .idle
+                }
+                statusCallback?("error:notAuthorized")
+                
+            case .notAvailable:
+                stateQueue.sync {
+                    self.state = .idle
+                }
+                statusCallback?("error:notAvailable")
+                
+            case .recognitionTaskUnavailable:
+                // Retry by resetting state
+                stateQueue.sync {
+                    self.state = .idle
+                }
+                statusCallback?("error:taskUnavailable")
+                
+            default:
+                stateQueue.sync {
+                    self.state = .stopped
+                }
+                statusCallback?("error:\(speechError.localizedDescription)")
+            }
+        } else {
+            // Network or other errors
+            stateQueue.sync {
+                self.state = .stopped
+            }
+            statusCallback?("error:\(error.localizedDescription)")
+        }
+    }
+    
+    // MARK: - Callbacks
+    
+    /// Sets a callback to receive recognition results.
+    /// - Parameter callback: Closure called with (transcription, isFinal)
+    func setResultCallback(_ callback: @escaping (String, Bool) -> Void) {
+        resultCallback = callback
+    }
+    
+    /// Sets a callback to receive status updates.
+    /// - Parameter callback: Closure called with status string
+    func setStatusCallback(_ callback: @escaping (String) -> Void) {
+        statusCallback = callback
+    }
+    
+    // MARK: - State Queries
+    
+    /// Returns whether recognition is currently active.
+    var isListening: Bool {
+        return stateQueue.sync {
+            return self.state == .listening || self.state == .initializing
+        }
+    }
+    
+    /// Returns the current recognition state.
+    var currentState: RecognitionState {
+        return stateQueue.sync {
+            return self.state
+        }
+    }
+    
+    // MARK: - Cleanup
+    
+    deinit {
+        cancelRecognition()
+    }
+}
+
+// MARK: - Error Types
+
+enum SpeechRecognizerError: Error {
+    case notInitialized
+    case notAuthorized
+    case notAvailable
+    case requestCreationFailed
+    
+    var localizedDescription: String {
+        switch self {
+        case .notInitialized:
+            return "Speech recognizer not initialized"
+        case .notAuthorized:
+            return "Speech recognition authorization denied"
+        case .notAvailable:
+            return "Speech recognition not available"
+        case .requestCreationFailed:
+            return "Failed to create recognition request"
+        }
+    }
+}
+
