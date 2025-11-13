@@ -1,8 +1,6 @@
 import 'dart:async';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
-import 'package:speech_to_text/speech_recognition_result.dart';
-import 'package:audio_waveforms/audio_waveforms.dart';
 import 'package:flutter_dictation/flutter_dictation.dart';
 
 void main() {
@@ -35,18 +33,18 @@ class DictationExampleScreen extends StatefulWidget {
 class _DictationExampleScreenState extends State<DictationExampleScreen> {
   final TextEditingController _textController = TextEditingController();
   final FocusNode _focusNode = FocusNode();
+  late final NativeDictationService _dictationService;
+  final WaveformController _waveformController = WaveformController();
   bool _isListening = false;
-  bool _isProcessing = false;
   bool _isInitializing = true;
+  String _status = 'Initializing...';
   Timer? _recordingTimer;
   Duration _elapsedTime = Duration.zero;
-  late final RecorderController _recorderController;
-  final String _fieldId = 'example_field_${DateTime.now().millisecondsSinceEpoch}';
 
   @override
   void initState() {
     super.initState();
-    _recorderController = AudioService().getRecorderController(_fieldId);
+    _dictationService = NativeDictationService();
     _initializeInBackground();
   }
 
@@ -55,18 +53,19 @@ class _DictationExampleScreenState extends State<DictationExampleScreen> {
     _recordingTimer?.cancel();
     _textController.dispose();
     _focusNode.dispose();
-    AudioService().dispose(_fieldId);
+    _waveformController.dispose();
+    _dictationService.dispose();
     super.dispose();
   }
 
   Future<void> _initializeInBackground() async {
     try {
-      final audioService = AudioService();
-      await audioService.initialize();
+      await _dictationService.initialize();
 
       if (mounted) {
         setState(() {
           _isInitializing = false;
+          _status = 'Ready to record';
         });
       }
     } catch (e) {
@@ -74,24 +73,23 @@ class _DictationExampleScreenState extends State<DictationExampleScreen> {
       if (mounted) {
         setState(() {
           _isInitializing = false;
+          _status = 'Error: $e';
         });
       }
     }
   }
 
   void _startListening() async {
-    if (_isInitializing) {
-      print("Still initializing speech recognition...");
-      return;
-    }
-
-    if (!AudioService().isReady || _isListening) return;
+    if (_isInitializing || _isListening) return;
     if (!mounted) return;
 
     setState(() {
       _isListening = true;
       _elapsedTime = Duration.zero;
+      _status = 'Listening...';
     });
+
+    _waveformController.reset();
 
     _recordingTimer?.cancel();
     _recordingTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
@@ -105,36 +103,48 @@ class _DictationExampleScreenState extends State<DictationExampleScreen> {
     });
 
     try {
-      await AudioService().startListening(
-        fieldId: _fieldId,
+      await _dictationService.startListening(
         onResult: _onSpeechResult,
+        onStatus: _onStatusUpdate,
+        onAudioLevel: (level) {
+          if (mounted) {
+            _waveformController.updateLevel(level);
+          }
+        },
+        onError: _onError,
       );
     } catch (e) {
       print("Error during start/listen: $e");
       if (mounted) {
-        setState(() => _isListening = false);
+        setState(() {
+          _isListening = false;
+          _status = 'Error: $e';
+        });
         _recordingTimer?.cancel();
+        _waveformController.reset();
       }
     }
   }
 
   void _stopListening() async {
-    // Update UI immediately for responsive feel
     _recordingTimer?.cancel();
     if (mounted) {
-      setState(() => _isListening = false);
+      setState(() {
+        _isListening = false;
+        _status = 'Stopped';
+      });
+      _waveformController.reset();
     }
-    
-    // Cleanup in background
+
     try {
-      await AudioService().stopListening(_fieldId);
+      await _dictationService.stopListening();
     } catch (e) {
       print("Error stopping recording: $e");
     }
   }
 
-  void _onSpeechResult(SpeechRecognitionResult result) {
-    if (result.finalResult && result.recognizedWords.isNotEmpty) {
+  void _onSpeechResult(String text, bool isFinal) {
+    if (isFinal && text.isNotEmpty) {
       if (!mounted) return;
 
       final currentText = _textController.text;
@@ -147,17 +157,17 @@ class _DictationExampleScreenState extends State<DictationExampleScreen> {
         newText = currentText.replaceRange(
           selection.start,
           selection.end,
-          '${result.recognizedWords} ',
+          '$text ',
         );
         // Set cursor position after the inserted text
-        final newOffset = selection.start + result.recognizedWords.length + 1;
+        final newOffset = selection.start + text.length + 1;
         _textController.value = TextEditingValue(
           text: newText,
           selection: TextSelection.collapsed(offset: newOffset),
         );
       } else {
         // If no selection, append at the end
-        newText = '$currentText${result.recognizedWords} ';
+        newText = '$currentText$text ';
         _textController.value = TextEditingValue(
           text: newText,
           selection: TextSelection.collapsed(offset: newText.length),
@@ -166,13 +176,29 @@ class _DictationExampleScreenState extends State<DictationExampleScreen> {
     }
   }
 
+  void _onStatusUpdate(String status) {
+    if (mounted) {
+      setState(() {
+        _status = status;
+      });
+    }
+  }
+
+  void _onError(String error) {
+    print("Dictation error: $error");
+    if (mounted) {
+      setState(() {
+        _isListening = false;
+        _status = 'Error: $error';
+      });
+      _recordingTimer?.cancel();
+      _waveformController.reset();
+    }
+  }
+
   void _handleMicPressed() async {
     if (_isInitializing) {
       print("Still initializing speech recognition...");
-      return;
-    }
-    if (!AudioService().isReady) {
-      print("Speech recognition not available or not initialized.");
       return;
     }
     if (!_isListening) {
@@ -184,15 +210,16 @@ class _DictationExampleScreenState extends State<DictationExampleScreen> {
   }
 
   void _cancelListening() {
-    print("CANCEL: Cancel requested. Calling _stopListening...");
-    // Update UI immediately for responsive feel
     _recordingTimer?.cancel();
     if (mounted) {
-      setState(() => _isListening = false);
+      setState(() {
+        _isListening = false;
+        _status = 'Cancelled';
+      });
+      _waveformController.reset();
     }
-    
-    // Cleanup in background
-    AudioService().cancelListening(_fieldId).catchError((e) {
+
+    _dictationService.cancelListening().catchError((e) {
       print("Error cancelling recording: $e");
     });
   }
@@ -219,11 +246,7 @@ class _DictationExampleScreenState extends State<DictationExampleScreen> {
               ),
               const SizedBox(height: 8),
               Text(
-                _isInitializing
-                    ? 'Initializing...'
-                    : AudioService().isReady
-                        ? 'Ready to record'
-                        : 'Not ready - check permissions',
+                _status,
                 style: TextStyle(
                   fontSize: 14,
                   color: CupertinoColors.secondaryLabel.resolveFrom(context),
@@ -239,32 +262,114 @@ class _DictationExampleScreenState extends State<DictationExampleScreen> {
                       borderRadius: BorderRadius.circular(12.0),
                     ),
                     padding: const EdgeInsets.all(16.0),
-                    child: AudioControlsDecorator(
-                      isListening: _isListening,
-                      isProcessing: _isProcessing,
-                      elapsedTime: _elapsedTime,
-                      recorderController: _recorderController,
-                      onMicPressed: _handleMicPressed,
-                      onCancelPressed: _cancelListening,
-                      child: CupertinoTextField(
-                        controller: _textController,
-                        focusNode: _focusNode,
-                        placeholder: 'Tap the mic to start dictating...',
-                        placeholderStyle: TextStyle(
-                          color: CupertinoColors.secondaryLabel
-                              .resolveFrom(context)
-                              .withOpacity(0.7),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        CupertinoTextField(
+                          controller: _textController,
+                          focusNode: _focusNode,
+                          placeholder: 'Tap the mic to start dictating...',
+                          placeholderStyle: TextStyle(
+                            color: CupertinoColors.secondaryLabel
+                                .resolveFrom(context)
+                                .withOpacity(0.7),
+                          ),
+                          maxLines: null,
+                          minLines: 6,
+                          keyboardType: TextInputType.multiline,
+                          decoration: BoxDecoration(
+                            color: CupertinoColors.systemBackground.resolveFrom(context),
+                            borderRadius: BorderRadius.circular(8.0),
+                          ),
+                          padding: const EdgeInsets.all(12.0),
+                          style: const TextStyle(fontSize: 16),
                         ),
-                        maxLines: null,
-                        minLines: 6,
-                        keyboardType: TextInputType.multiline,
-                        decoration: BoxDecoration(
-                          color: CupertinoColors.systemBackground.resolveFrom(context),
-                          borderRadius: BorderRadius.circular(8.0),
-                        ),
-                        padding: const EdgeInsets.all(12.0),
-                        style: const TextStyle(fontSize: 16),
-                      ),
+                        const SizedBox(height: 8.0),
+                        // Control row with native waveform
+                        if (_isListening) ...[
+                          Container(
+                            height: 40.0,
+                            padding: const EdgeInsets.symmetric(
+                                vertical: 4.0, horizontal: 8.0),
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.center,
+                              children: [
+                                // Cancel Button (Left)
+                                CupertinoButton(
+                                  padding: const EdgeInsets.only(right: 8.0),
+                                  minSize: 30,
+                                  onPressed: _cancelListening,
+                                  child: Icon(
+                                    CupertinoIcons.xmark_circle_fill,
+                                    color: CupertinoColors.secondaryLabel
+                                        .resolveFrom(context),
+                                    size: 20.0,
+                                  ),
+                                ),
+                                // Native Waveform (Middle, Expanded)
+                                Expanded(
+                                  child: NativeWaveform(
+                                    controller: _waveformController,
+                                    height: 30.0,
+                                    color: CupertinoColors.systemBlue
+                                        .resolveFrom(context),
+                                  ),
+                                ),
+                                // Timer and Checkmark (Right)
+                                Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    // Timer Text
+                                    Text(
+                                      _formatDuration(_elapsedTime),
+                                      style: TextStyle(
+                                        color: CupertinoColors.secondaryLabel
+                                            .resolveFrom(context),
+                                        fontSize: 13,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8.0),
+                                    // Checkmark Button
+                                    CupertinoButton(
+                                      padding: EdgeInsets.zero,
+                                      minSize: 30,
+                                      onPressed: _handleMicPressed,
+                                      child: Icon(
+                                        CupertinoIcons.checkmark_circle_fill,
+                                        color: CupertinoColors.secondaryLabel
+                                            .resolveFrom(context),
+                                        size: 20.0,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ],
+                            ),
+                          ),
+                        ] else ...[
+                          const SizedBox(height: 8.0),
+                          Container(
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: CupertinoColors.secondaryLabel
+                                  .resolveFrom(context)
+                                  .withValues(alpha: 0.1),
+                            ),
+                            child: CupertinoButton(
+                              padding: const EdgeInsets.all(12.0),
+                              minSize: 60,
+                              onPressed: _isInitializing ? null : _handleMicPressed,
+                              child: Icon(
+                                CupertinoIcons.mic,
+                                color: CupertinoColors.secondaryLabel
+                                    .resolveFrom(context),
+                                size: 32.0,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
                     ),
                   ),
                 ),
@@ -276,5 +381,11 @@ class _DictationExampleScreenState extends State<DictationExampleScreen> {
       ),
     );
   }
-}
 
+  String _formatDuration(Duration duration) {
+    String twoDigits(int n) => n.toString().padLeft(2, '0');
+    final minutes = twoDigits(duration.inMinutes.remainder(60));
+    final seconds = twoDigits(duration.inSeconds.remainder(60));
+    return "$minutes:$seconds";
+  }
+}

@@ -16,29 +16,21 @@ This implementation had latency issues (3+ seconds) due to:
 
 ## Status
 
-**Deprecated** - Being replaced by native iOS implementation in `../native_implementation/`
+**Reference Only** - This code is kept for reference purposes only. It's not part of the active codebase.
 
-## Migration
-
-The new native implementation provides:
+The new native iOS implementation (in `../lib/services/` and `../ios/Runner/`) provides:
 - Sub-100ms latency (vs 3000ms)
 - Direct control over audio pipeline
 - Better performance and user experience
 
-See `../native_implementation/` for the new implementation.
+See `../docs/native_implementation/` for the new implementation details.
 
 ## Keeping for Reference
 
 This code is kept for:
-- Reference during migration
-- Rollback capability (via feature flag)
-- Comparison testing
-- Documentation purposes
+- Understanding the original package-based approach
+- Comparing performance improvements
+- Reference during development if needed
 
-## Usage
-
-If you need to use the legacy implementation temporarily:
-- Use the feature flag in `DictationServiceFactory`
-- Set `useNativeImplementation = false`
-- See `../native_implementation/05_MIGRATION_STRATEGY.md` for details
+**Note**: This code is not maintained and is not part of the active codebase. The native implementation is the only active implementation.
 

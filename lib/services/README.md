@@ -1,25 +1,24 @@
 # Services Directory
 
-This directory will contain the new native-based dictation service.
+This directory contains the native-based dictation service.
 
 ## Current Status
 
-**In Transition** - We're migrating from package-based to native iOS implementation.
+**Native Implementation** - Building the native iOS implementation directly as the primary implementation.
 
 ## Legacy Implementation
 
-The original `audio_service.dart` (package-based) has been moved to `../../legacy/lib/services/` for reference.
+The original `audio_service.dart` (package-based) has been moved to `../../legacy/lib/services/` for reference only. It's not part of the active codebase.
 
-## New Implementation
+## Native Implementation
 
-The new native implementation will be created here:
-- `native_dictation_service.dart` - Native iOS-based service
-- `dictation_service_interface.dart` - Common interface
-- `dictation_service_factory.dart` - Factory with feature flag
+The native implementation is located here:
+- `native_dictation_service.dart` - Native iOS-based service (primary implementation)
+- `waveform_controller.dart` - Waveform state management
 
-## Migration
+## Implementation Strategy
 
-See `../../native_implementation/05_MIGRATION_STRATEGY.md` for migration details.
+See `../../docs/native_implementation/05_MIGRATION_STRATEGY.md` for implementation details.
 
-During migration, both implementations will be available via feature flag.
+Since there are no existing products to migrate, we're building the native implementation directly without migration complexity.
 

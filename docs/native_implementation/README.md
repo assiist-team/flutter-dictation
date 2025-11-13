@@ -21,7 +21,7 @@ The implementation is broken into phases, each with its own planning document:
 3. **[02_SPEECH_RECOGNIZER_SETUP.md](02_SPEECH_RECOGNIZER_SETUP.md)** - Speech recognition setup
 4. **[03_PLATFORM_CHANNELS.md](03_PLATFORM_CHANNELS.md)** - Flutter integration via platform channels
 5. **[04_WAVEFORM_STREAMING.md](04_WAVEFORM_STREAMING.md)** - Real-time waveform visualization
-6. **[05_MIGRATION_STRATEGY.md](05_MIGRATION_STRATEGY.md)** - Safe migration from legacy implementation
+6. **[05_MIGRATION_STRATEGY.md](05_MIGRATION_STRATEGY.md)** - Implementation strategy (no migration needed - building fresh)
 7. **[06_TESTING_OPTIMIZATION.md](06_TESTING_OPTIMIZATION.md)** - Testing and performance optimization
 8. **[PARALLEL_IMPLEMENTATION.md](PARALLEL_IMPLEMENTATION.md)** - ⚡ Guide for parallelizing phases to save time
 
@@ -47,7 +47,7 @@ The implementation is broken into phases, each with its own planning document:
 - [ ] Phase 2: Speech Recognizer Setup
 - [ ] Phase 3: Platform Channels
 - [ ] Phase 4: Waveform Streaming
-- [ ] Phase 5: Migration Strategy
+- [ ] Phase 5: Implementation Strategy
 - [ ] Phase 6: Testing & Optimization
 
 ## Getting Started
@@ -56,7 +56,7 @@ The implementation is broken into phases, each with its own planning document:
 2. **Check parallel opportunities** (`PARALLEL_IMPLEMENTATION.md`) - Can save 3-6 hours!
 3. Follow phases (some can be done in parallel - see guide)
 4. Test each phase before moving to next
-5. Use feature flag to switch between implementations
+5. Build native implementation directly as the primary implementation
 
 ## Key Optimizations
 
@@ -74,13 +74,13 @@ The implementation is broken into phases, each with its own planning document:
 - **CPU Usage**: < 15% when recording
 - **Memory**: Stable, no leaks
 
-## Migration Path
+## Implementation Path
 
-1. Build native implementation alongside legacy
-2. Use feature flag to switch between implementations
-3. A/B test with metrics collection
-4. Gradual rollout
-5. Remove legacy code once proven
+Since there are no existing products to migrate, we can:
+1. Build native implementation directly as the primary implementation
+2. Focus on quality and performance without migration complexity
+3. Keep legacy code in `legacy/` directory for reference only
+4. Remove legacy code from active codebase once native implementation is stable
 
 ## Resources
 

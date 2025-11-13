@@ -1,5 +1,6 @@
-import 'package:audio_waveforms/audio_waveforms.dart';
 import 'package:flutter/cupertino.dart';
+import '../services/waveform_controller.dart';
+import '../widgets/native_waveform.dart';
 import '../theme/dictation_styles.dart';
 
 /// A decorator widget that adds audio recording controls (mic/checkmark, timer, cancel, waveform)
@@ -9,7 +10,7 @@ class AudioControlsDecorator extends StatelessWidget {
   final bool isListening;
   final bool isProcessing; // New state for processing
   final Duration elapsedTime;
-  final RecorderController? recorderController; // Optional for waveform
+  final WaveformController? waveformController; // Optional for native waveform
   final VoidCallback? onMicPressed; // Toggles listening state (mic/checkmark)
   final VoidCallback? onCancelPressed; // Callback for cancel button
 
@@ -19,7 +20,7 @@ class AudioControlsDecorator extends StatelessWidget {
     required this.isListening,
     this.isProcessing = false, // Default to false
     required this.elapsedTime,
-    this.recorderController,
+    this.waveformController,
     this.onMicPressed,
     this.onCancelPressed,
   });
@@ -108,25 +109,15 @@ class AudioControlsDecorator extends StatelessWidget {
                 ),
 
               // Waveform (Middle, Expanded)
-              if (recorderController != null)
+              if (waveformController != null)
                 Expanded(
-                  child: AudioWaveforms(
-                    size: Size(double.infinity, waveformHeight),
-                    recorderController: recorderController!,
-                    waveStyle: WaveStyle(
-                      waveColor: DictationStyles.secondaryTextColor(context),
-                      showDurationLabel: false,
-                      spacing: 3.0,
-                      waveThickness: 2.0,
-                      extendWaveform: true,
-                      showMiddleLine: false,
-                      scaleFactor: 100,
-                    ),
-                    padding: EdgeInsets.zero,
-                    margin: EdgeInsets.zero,
+                  child: NativeWaveform(
+                    controller: waveformController!,
+                    height: waveformHeight,
+                    color: DictationStyles.secondaryTextColor(context),
                   ),
                 ),
-              if (recorderController == null) const Spacer(),
+              if (waveformController == null) const Spacer(),
               // Timer and Checkmark/Processing (Right)
               Row(
                 mainAxisSize: MainAxisSize.min,
