@@ -10,6 +10,11 @@ class AudioEngineManager {
     private let audioEngine = AVAudioEngine()
     private let audioSession = AVAudioSession.sharedInstance()
     
+    /// Exposes the audio engine for speech recognizer attachment.
+    var engine: AVAudioEngine {
+        return audioEngine
+    }
+    
     private var inputNode: AVAudioInputNode {
         return audioEngine.inputNode
     }
