@@ -94,13 +94,24 @@ class DictationManager: NSObject, FlutterStreamHandler {
     // MARK: - Method Implementations
     
     private func handleInitialize(result: @escaping FlutterResult) {
+        let startTime = CFAbsoluteTimeGetCurrent()
+        
         Task {
             do {
                 // Initialize audio engine
+                let audioEngineStartTime = CFAbsoluteTimeGetCurrent()
                 try audioEngineManager.initialize()
+                let audioEngineDuration = (CFAbsoluteTimeGetCurrent() - audioEngineStartTime) * 1000
+                logEvent("audio_engine_init", metadata: ["duration_ms": audioEngineDuration])
                 
                 // Initialize speech recognizer
+                let recognizerStartTime = CFAbsoluteTimeGetCurrent()
                 try await speechRecognizerManager.initialize()
+                let recognizerDuration = (CFAbsoluteTimeGetCurrent() - recognizerStartTime) * 1000
+                logEvent("speech_recognizer_init", metadata: ["duration_ms": recognizerDuration])
+                
+                let totalDuration = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
+                logEvent("initialize_complete", metadata: ["total_duration_ms": totalDuration])
                 
                 await MainActor.run {
                     self.stateQueue.sync {
@@ -110,10 +121,18 @@ class DictationManager: NSObject, FlutterStreamHandler {
                     result(nil)
                 }
             } catch {
+                let totalDuration = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
+                let dictationError = DictationError.from(error)
+                logEvent("initialize_error", metadata: [
+                    "duration_ms": totalDuration,
+                    "error": dictationError.localizedDescription,
+                    "code": dictationError.code
+                ])
+                
                 await MainActor.run {
                     result(FlutterError(
-                        code: "INIT_ERROR",
-                        message: error.localizedDescription,
+                        code: dictationError.code,
+                        message: dictationError.localizedDescription,
                         details: nil
                     ))
                 }
@@ -122,6 +141,8 @@ class DictationManager: NSObject, FlutterStreamHandler {
     }
     
     private func handleStartListening(result: @escaping FlutterResult) {
+        let startTime = CFAbsoluteTimeGetCurrent()
+        
         Task {
             do {
                 stateQueue.sync {
@@ -132,15 +153,24 @@ class DictationManager: NSObject, FlutterStreamHandler {
                 }
                 
                 // Start audio engine first
+                let audioEngineStartTime = CFAbsoluteTimeGetCurrent()
                 try audioEngineManager.startRecording()
+                let audioEngineDuration = (CFAbsoluteTimeGetCurrent() - audioEngineStartTime) * 1000
+                logEvent("audio_engine_start", metadata: ["duration_ms": audioEngineDuration])
                 
                 // Then start speech recognition
+                let recognizerStartTime = CFAbsoluteTimeGetCurrent()
                 try await speechRecognizerManager.startRecognition(
                     audioEngine: audioEngineManager.engine
                 )
+                let recognizerDuration = (CFAbsoluteTimeGetCurrent() - recognizerStartTime) * 1000
+                logEvent("speech_recognizer_start", metadata: ["duration_ms": recognizerDuration])
                 
                 // Start audio level streaming for waveform
                 startAudioLevelStreaming()
+                
+                let totalDuration = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
+                logEvent("start_listening_complete", metadata: ["total_duration_ms": totalDuration])
                 
                 await MainActor.run {
                     self.stateQueue.sync {
@@ -150,14 +180,22 @@ class DictationManager: NSObject, FlutterStreamHandler {
                     result(nil)
                 }
             } catch {
+                let totalDuration = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
+                let dictationError = DictationError.from(error)
+                logEvent("start_listening_error", metadata: [
+                    "duration_ms": totalDuration,
+                    "error": dictationError.localizedDescription,
+                    "code": dictationError.code
+                ])
+                
                 await MainActor.run {
                     self.stateQueue.sync {
                         self.state = .stopped
                     }
-                    self.sendStatus("error")
+                    self.sendError(dictationError.localizedDescription)
                     result(FlutterError(
-                        code: "START_ERROR",
-                        message: error.localizedDescription,
+                        code: dictationError.code,
+                        message: dictationError.localizedDescription,
                         details: nil
                     ))
                 }
@@ -339,12 +377,92 @@ class DictationManager: NSObject, FlutterStreamHandler {
         }
     }
     
+    // MARK: - Logging
+    
+    /// Logs events with metadata for performance monitoring and debugging.
+    /// - Parameters:
+    ///   - event: Event name
+    ///   - metadata: Additional metadata dictionary
+    private func logEvent(_ event: String, metadata: [String: Any] = [:]) {
+        #if DEBUG
+        let metadataString = metadata.map { "\($0.key)=\($0.value)" }.joined(separator: ", ")
+        print("[DictationManager] \(event): \(metadataString)")
+        #endif
+        // In production, this could send to analytics or crash reporting
+    }
+    
     // MARK: - Cleanup
     
     deinit {
         stopAudioLevelStreaming()
         audioEngineManager.stopRecording()
         speechRecognizerManager.cancelRecognition()
+    }
+}
+
+// MARK: - Error Types
+
+enum DictationError: Error {
+    case notAuthorized
+    case notAvailable
+    case audioEngineFailed
+    case recognitionFailed
+    case initializationFailed
+    case unknown(Error)
+    
+    var code: String {
+        switch self {
+        case .notAuthorized:
+            return "NOT_AUTHORIZED"
+        case .notAvailable:
+            return "NOT_AVAILABLE"
+        case .audioEngineFailed:
+            return "AUDIO_ENGINE_ERROR"
+        case .recognitionFailed:
+            return "RECOGNITION_ERROR"
+        case .initializationFailed:
+            return "INIT_ERROR"
+        case .unknown:
+            return "UNKNOWN_ERROR"
+        }
+    }
+    
+    var localizedDescription: String {
+        switch self {
+        case .notAuthorized:
+            return "Speech recognition not authorized. Please grant microphone and speech recognition permissions."
+        case .notAvailable:
+            return "Speech recognition is not available on this device."
+        case .audioEngineFailed:
+            return "Audio engine failed to start. Please try again."
+        case .recognitionFailed:
+            return "Speech recognition failed. Please try again."
+        case .initializationFailed:
+            return "Failed to initialize dictation service. Please try again."
+        case .unknown(let error):
+            return error.localizedDescription
+        }
+    }
+    
+    static func from(_ error: Error) -> DictationError {
+        if let speechError = error as? SpeechRecognizerError {
+            switch speechError {
+            case .notAuthorized:
+                return .notAuthorized
+            case .notAvailable:
+                return .notAvailable
+            case .notInitialized, .requestCreationFailed:
+                return .initializationFailed
+            }
+        }
+        
+        // Check for audio session errors
+        let nsError = error as NSError
+        if nsError.domain == "com.apple.coreaudio" {
+            return .audioEngineFailed
+        }
+        
+        return .unknown(error)
     }
 }
 

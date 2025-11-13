@@ -43,21 +43,32 @@ class AudioEngineManager {
     /// Should be called at app launch for pre-warming.
     /// - Throws: Audio session configuration errors
     func initialize() throws {
+        let startTime = CFAbsoluteTimeGetCurrent()
+        
         guard state == .idle else {
             // Already initialized
             return
         }
         
         // Configure audio session for low-latency recording
+        let sessionStartTime = CFAbsoluteTimeGetCurrent()
         try configureAudioSession()
+        let sessionDuration = (CFAbsoluteTimeGetCurrent() - sessionStartTime) * 1000
+        logEvent("audio_session_config", metadata: ["duration_ms": sessionDuration])
         
         // Set up audio engine
+        let engineStartTime = CFAbsoluteTimeGetCurrent()
         setupAudioEngine()
+        let engineDuration = (CFAbsoluteTimeGetCurrent() - engineStartTime) * 1000
+        logEvent("audio_engine_setup", metadata: ["duration_ms": engineDuration])
         
         // Register for audio session interruptions
         setupInterruptionHandling()
         
         state = .idle
+        
+        let totalDuration = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
+        logEvent("audio_engine_initialize_complete", metadata: ["total_duration_ms": totalDuration])
     }
     
     // MARK: - Audio Session Configuration
@@ -108,15 +119,20 @@ class AudioEngineManager {
     /// Starts audio recording.
     /// - Throws: Audio engine start errors
     func startRecording() throws {
+        let startTime = CFAbsoluteTimeGetCurrent()
+        
         guard state != .recording else {
             // Already recording
             return
         }
         
         // Ensure audio session is active
+        let sessionStartTime = CFAbsoluteTimeGetCurrent()
         if !audioSession.isOtherAudioPlaying {
             try audioSession.setActive(true)
         }
+        let sessionDuration = (CFAbsoluteTimeGetCurrent() - sessionStartTime) * 1000
+        logEvent("audio_session_activate", metadata: ["duration_ms": sessionDuration])
         
         // Install tap (must be done before engine starts)
         // If engine is already running, stop it first
@@ -124,12 +140,21 @@ class AudioEngineManager {
             audioEngine.stop()
         }
         
+        let tapStartTime = CFAbsoluteTimeGetCurrent()
         installAudioTap()
+        let tapDuration = (CFAbsoluteTimeGetCurrent() - tapStartTime) * 1000
+        logEvent("audio_tap_install", metadata: ["duration_ms": tapDuration])
         
         // Start the audio engine
+        let engineStartTime = CFAbsoluteTimeGetCurrent()
         try audioEngine.start()
+        let engineDuration = (CFAbsoluteTimeGetCurrent() - engineStartTime) * 1000
+        logEvent("audio_engine_start", metadata: ["duration_ms": engineDuration])
         
         state = .recording
+        
+        let totalDuration = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
+        logEvent("start_recording_complete", metadata: ["total_duration_ms": totalDuration])
     }
     
     /// Stops audio recording.
@@ -305,6 +330,20 @@ class AudioEngineManager {
         }
         // Remove tap if installed (safe to call even if no tap exists)
         inputNode.removeTap(onBus: 0)
+    }
+    
+    // MARK: - Logging
+    
+    /// Logs events with metadata for performance monitoring and debugging.
+    /// - Parameters:
+    ///   - event: Event name
+    ///   - metadata: Additional metadata dictionary
+    private func logEvent(_ event: String, metadata: [String: Any] = [:]) {
+        #if DEBUG
+        let metadataString = metadata.map { "\($0.key)=\($0.value)" }.joined(separator: ", ")
+        print("[AudioEngineManager] \(event): \(metadataString)")
+        #endif
+        // In production, this could send to analytics or crash reporting
     }
     
     // MARK: - State Queries

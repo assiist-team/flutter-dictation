@@ -38,19 +38,28 @@ class SpeechRecognizerManager {
     /// Should be called at app launch for pre-warming.
     /// - Throws: Initialization errors
     func initialize() async throws {
+        let startTime = CFAbsoluteTimeGetCurrent()
+        
         // Check if already initialized
         if recognizer != nil && isAuthorized {
             return
         }
         
         // Request authorization
+        let authStartTime = CFAbsoluteTimeGetCurrent()
         let authorized = await requestAuthorization()
+        let authDuration = (CFAbsoluteTimeGetCurrent() - authStartTime) * 1000
+        logEvent("authorization_request", metadata: ["duration_ms": authDuration, "authorized": authorized])
+        
         guard authorized else {
             throw SpeechRecognizerError.notAuthorized
         }
         
         // Create recognizer with English locale
+        let recognizerStartTime = CFAbsoluteTimeGetCurrent()
         recognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
+        let recognizerDuration = (CFAbsoluteTimeGetCurrent() - recognizerStartTime) * 1000
+        logEvent("recognizer_creation", metadata: ["duration_ms": recognizerDuration])
         
         guard let recognizer = recognizer else {
             throw SpeechRecognizerError.notAvailable
@@ -73,6 +82,9 @@ class SpeechRecognizerManager {
         stateQueue.sync {
             self.state = .idle
         }
+        
+        let totalDuration = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
+        logEvent("speech_recognizer_initialize_complete", metadata: ["total_duration_ms": totalDuration])
     }
     
     // MARK: - Authorization
@@ -91,6 +103,8 @@ class SpeechRecognizerManager {
     /// - Parameter audioEngine: The AVAudioEngine instance to attach to
     /// - Throws: Recognition start errors
     func startRecognition(audioEngine: AVAudioEngine) async throws {
+        let startTime = CFAbsoluteTimeGetCurrent()
+        
         guard let recognizer = recognizer else {
             throw SpeechRecognizerError.notInitialized
         }
@@ -115,7 +129,10 @@ class SpeechRecognizerManager {
         }
         
         // Create recognition request
+        let requestStartTime = CFAbsoluteTimeGetCurrent()
         recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
+        let requestDuration = (CFAbsoluteTimeGetCurrent() - requestStartTime) * 1000
+        logEvent("recognition_request_creation", metadata: ["duration_ms": requestDuration])
         
         guard let recognitionRequest = recognitionRequest else {
             stateQueue.sync {
@@ -131,6 +148,7 @@ class SpeechRecognizerManager {
         recognitionRequest.taskHint = .dictation
         
         // Attach audio engine's input node
+        let tapStartTime = CFAbsoluteTimeGetCurrent()
         let inputNode = audioEngine.inputNode
         currentInputNode = inputNode
         let recordingFormat = inputNode.outputFormat(forBus: 0)
@@ -144,19 +162,27 @@ class SpeechRecognizerManager {
         ) { [weak self] buffer, _ in
             self?.recognitionRequest?.append(buffer)
         }
+        let tapDuration = (CFAbsoluteTimeGetCurrent() - tapStartTime) * 1000
+        logEvent("recognition_tap_install", metadata: ["duration_ms": tapDuration])
         
         // Start recognition task
+        let taskStartTime = CFAbsoluteTimeGetCurrent()
         recognitionTask = recognizer.recognitionTask(
             with: recognitionRequest
         ) { [weak self] result, error in
             self?.handleRecognitionResult(result: result, error: error)
         }
+        let taskDuration = (CFAbsoluteTimeGetCurrent() - taskStartTime) * 1000
+        logEvent("recognition_task_start", metadata: ["duration_ms": taskDuration])
         
         stateQueue.sync {
             self.state = .listening
         }
         
         statusCallback?("listening")
+        
+        let totalDuration = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
+        logEvent("start_recognition_complete", metadata: ["total_duration_ms": totalDuration])
     }
     
     /// Stops speech recognition gracefully.
@@ -233,6 +259,17 @@ class SpeechRecognizerManager {
         
         guard let result = result else {
             return
+        }
+        
+        // Track first result latency
+        if resultCallback != nil {
+            let resultTime = CFAbsoluteTimeGetCurrent()
+            // Note: We can't easily track when recognition actually started processing,
+            // but we can log when results arrive
+            logEvent("recognition_result", metadata: [
+                "is_final": result.isFinal,
+                "text_length": result.bestTranscription.formattedString.count
+            ])
         }
         
         // Send partial results immediately
@@ -330,6 +367,20 @@ class SpeechRecognizerManager {
         return stateQueue.sync {
             return self.state
         }
+    }
+    
+    // MARK: - Logging
+    
+    /// Logs events with metadata for performance monitoring and debugging.
+    /// - Parameters:
+    ///   - event: Event name
+    ///   - metadata: Additional metadata dictionary
+    private func logEvent(_ event: String, metadata: [String: Any] = [:]) {
+        #if DEBUG
+        let metadataString = metadata.map { "\($0.key)=\($0.value)" }.joined(separator: ", ")
+        print("[SpeechRecognizerManager] \(event): \(metadataString)")
+        #endif
+        // In production, this could send to analytics or crash reporting
     }
     
     // MARK: - Cleanup
