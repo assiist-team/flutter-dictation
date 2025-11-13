@@ -117,11 +117,12 @@ class SpeechRecognizerManager {
         }
         
         // Check authorization
-        guard isAuthorized else {
+        if !isAuthorized {
             let authorized = await requestAuthorization()
             guard authorized else {
                 throw SpeechRecognizerError.notAuthorized
             }
+            isAuthorized = true
         }
         
         // Cancel any existing recognition task

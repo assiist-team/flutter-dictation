@@ -13,14 +13,38 @@ class NativeDictationService {
 
   /// Initialize the native dictation service.
   /// Should be called before starting to listen.
-  Future<void> initialize() async {
-    try {
-      await _methodChannel.invokeMethod('initialize');
-    } on PlatformException catch (e) {
-      if (e.code == 'INIT_ERROR') {
-        throw Exception('Failed to initialize dictation: ${e.message}');
+  /// Retries automatically if platform channels aren't ready yet.
+  Future<void> initialize({int maxRetries = 10, Duration retryDelay = const Duration(milliseconds: 100)}) async {
+    int retryCount = 0;
+    
+    while (retryCount < maxRetries) {
+      try {
+        await _methodChannel.invokeMethod('initialize');
+        return; // Success, exit retry loop
+      } on PlatformException catch (e) {
+        // Handle initialization errors from native code
+        if (e.code == 'INIT_ERROR') {
+          throw Exception('Failed to initialize dictation: ${e.message}');
+        }
+        rethrow;
+      } catch (e) {
+        // Handle MissingPluginException (channel not ready yet)
+        // MissingPluginException is thrown when platform channel handler isn't registered
+        final errorString = e.toString();
+        if (errorString.contains('MissingPluginException') || 
+            errorString.contains('No implementation found')) {
+          retryCount++;
+          if (retryCount < maxRetries) {
+            // Wait before retrying
+            await Future.delayed(retryDelay);
+            continue;
+          } else {
+            throw Exception('Failed to initialize dictation: Platform channels not available after $maxRetries retries. Please ensure the app has been rebuilt after adding native code.');
+          }
+        }
+        // Re-throw other errors
+        rethrow;
       }
-      rethrow;
     }
   }
 

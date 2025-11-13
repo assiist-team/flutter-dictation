@@ -262,10 +262,11 @@ class _DictationExampleScreenState extends State<DictationExampleScreen> {
                       borderRadius: BorderRadius.circular(12.0),
                     ),
                     padding: const EdgeInsets.all(16.0),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
+                    child: SingleChildScrollView(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
                         CupertinoTextField(
                           controller: _textController,
                           focusNode: _focusNode,
@@ -370,6 +371,7 @@ class _DictationExampleScreenState extends State<DictationExampleScreen> {
                           ),
                         ],
                       ],
+                    ),
                     ),
                   ),
                 ),
