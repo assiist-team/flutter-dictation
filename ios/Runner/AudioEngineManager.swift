@@ -41,6 +41,8 @@ class AudioEngineManager {
     
     /// Initializes the audio engine with optimal low-latency configuration.
     /// Should be called at app launch for pre-warming.
+    /// Note: Audio session category is not set here to avoid requiring permissions during init.
+    /// Category will be configured when recording starts (after permission is granted).
     /// - Throws: Audio session configuration errors
     func initialize() throws {
         let startTime = CFAbsoluteTimeGetCurrent()
@@ -50,13 +52,11 @@ class AudioEngineManager {
             return
         }
         
-        // Configure audio session for low-latency recording
-        let sessionStartTime = CFAbsoluteTimeGetCurrent()
-        try configureAudioSession()
-        let sessionDuration = (CFAbsoluteTimeGetCurrent() - sessionStartTime) * 1000
-        logEvent("audio_session_config", metadata: ["duration_ms": sessionDuration])
+        // Don't configure audio session category here - it requires microphone permission.
+        // We'll configure it in startRecording() after permission is granted.
+        // This allows the app to initialize successfully even without permissions.
         
-        // Set up audio engine
+        // Set up audio engine (without preparing - that happens when recording starts)
         let engineStartTime = CFAbsoluteTimeGetCurrent()
         try setupAudioEngine()
         let engineDuration = (CFAbsoluteTimeGetCurrent() - engineStartTime) * 1000
@@ -115,11 +115,22 @@ class AudioEngineManager {
     }
     
     /// Requests microphone permission asynchronously.
+    /// Must be called on the main thread to ensure the permission dialog appears.
     /// - Returns: True if granted, false otherwise
     private func requestMicrophonePermission() async -> Bool {
+        // Ensure we're on the main thread for the permission request
+        // This is required for the permission dialog to appear
         return await withCheckedContinuation { continuation in
-            audioSession.requestRecordPermission { granted in
-                continuation.resume(returning: granted)
+            if Thread.isMainThread {
+                audioSession.requestRecordPermission { granted in
+                    continuation.resume(returning: granted)
+                }
+            } else {
+                DispatchQueue.main.async {
+                    self.audioSession.requestRecordPermission { granted in
+                        continuation.resume(returning: granted)
+                    }
+                }
             }
         }
     }
@@ -222,13 +233,12 @@ class AudioEngineManager {
             }
         }
         
-        // Ensure audio session is active
+        // Configure audio session for recording (now that permission is granted)
+        // This must be done before preparing the audio engine
         let sessionStartTime = CFAbsoluteTimeGetCurrent()
-        if !audioSession.isOtherAudioPlaying {
-            try audioSession.setActive(true)
-        }
+        try configureAudioSession()
         let sessionDuration = (CFAbsoluteTimeGetCurrent() - sessionStartTime) * 1000
-        logEvent("audio_session_activate", metadata: ["duration_ms": sessionDuration])
+        logEvent("audio_session_config", metadata: ["duration_ms": sessionDuration])
         
         // Install tap (must be done before engine starts)
         // If engine is already running, stop it first
