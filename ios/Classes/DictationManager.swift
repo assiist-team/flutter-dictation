@@ -200,17 +200,16 @@ class DictationManager: NSObject, FlutterStreamHandler {
                 log("Setting up buffer callback for speech recognition...", level: .info)
                 log("About to call setBufferCallback", level: .info)
                 audioEngineManager.setBufferCallback { [weak self] buffer in
-                    log("=== BUFFER CALLBACK INVOKED ===", level: .info)
-                    log("Buffer frameLength: \(buffer.frameLength)", level: .info)
-                    log("Buffer sampleRate: \(buffer.format.sampleRate)", level: .info)
-                    log("self is nil: \(self == nil)", level: .info)
+                    self?.log("=== BUFFER CALLBACK INVOKED ===", level: .info)
+                    self?.log("Buffer frameLength: \(buffer.frameLength)", level: .info)
+                    self?.log("Buffer sampleRate: \(buffer.format.sampleRate)", level: .info)
+                    self?.log("self is nil: \(self == nil)", level: .info)
                     guard let self = self else {
-                        log("ERROR: self is nil in buffer callback", level: .error)
                         return
                     }
-                    log("Calling speechRecognizerManager.appendAudioBuffer", level: .info)
+                    self.log("Calling speechRecognizerManager.appendAudioBuffer", level: .info)
                     self.speechRecognizerManager.appendAudioBuffer(buffer)
-                    log("speechRecognizerManager.appendAudioBuffer completed", level: .info)
+                    self.log("speechRecognizerManager.appendAudioBuffer completed", level: .info)
                 }
                 log("Buffer callback set successfully", level: .info)
                 
@@ -463,6 +462,20 @@ class DictationManager: NSObject, FlutterStreamHandler {
         log("Function entry - thread: \(Thread.isMainThread ? "MAIN" : "BACKGROUND")", level: .info)
         log("About to enter audioLevelQueue.sync", level: .info)
         
+        // Stop any existing timer first (without resetting the flag)
+        // Use async to avoid deadlock if already on main thread
+        if Thread.isMainThread {
+            audioLevelTimer?.invalidate()
+            audioLevelTimer = nil
+            log("Cleared any existing audio level timer (on main thread)", level: .info)
+        } else {
+            DispatchQueue.main.sync {
+                audioLevelTimer?.invalidate()
+                audioLevelTimer = nil
+                log("Cleared any existing audio level timer (from background thread)", level: .info)
+            }
+        }
+        
         audioLevelQueue.sync {
             log("Inside audioLevelQueue.sync block", level: .info)
             log("isStreamingAudioLevels before check: \(self.isStreamingAudioLevels)", level: .info)
@@ -474,36 +487,31 @@ class DictationManager: NSObject, FlutterStreamHandler {
             log("Set isStreamingAudioLevels = true", level: .info)
         }
         
-        log("Exited audioLevelQueue.sync, about to call stopAudioLevelStreaming()", level: .info)
-        stopAudioLevelStreaming() // Ensure no existing timer
-        log("stopAudioLevelStreaming() completed", level: .info)
-        
         // Create timer on main thread for 60 FPS (every ~16ms)
         log("About to dispatch to main queue", level: .info)
         log("Current thread before dispatch: \(Thread.isMainThread ? "MAIN" : "BACKGROUND")", level: .info)
         DispatchQueue.main.async { [weak self] in
-            log("=== INSIDE MAIN QUEUE ASYNC BLOCK ===", level: .info)
-            log("Thread in async block: \(Thread.isMainThread ? "MAIN" : "BACKGROUND")", level: .info)
+            self?.log("=== INSIDE MAIN QUEUE ASYNC BLOCK ===", level: .info)
+            self?.log("Thread in async block: \(Thread.isMainThread ? "MAIN" : "BACKGROUND")", level: .info)
             guard let self = self else {
-                log("ERROR: self is nil in startAudioLevelStreaming dispatch", level: .error)
                 return
             }
-            log("self is not nil, continuing", level: .info)
+            self.log("self is not nil, continuing", level: .info)
             
             // Double-check we should still be streaming
-            log("About to check shouldStream", level: .info)
+            self.log("About to check shouldStream", level: .info)
             let shouldStream = self.audioLevelQueue.sync {
-                log("Inside shouldStream check, isStreamingAudioLevels=\(self.isStreamingAudioLevels)", level: .info)
+                self.log("Inside shouldStream check, isStreamingAudioLevels=\(self.isStreamingAudioLevels)", level: .info)
                 return self.isStreamingAudioLevels
             }
-            log("shouldStream result: \(shouldStream)", level: .info)
+            self.log("shouldStream result: \(shouldStream)", level: .info)
             
             guard shouldStream else {
-                log("Should not stream, aborting timer creation", level: .warning)
+                self.log("Should not stream, aborting timer creation", level: .warning)
                 return
             }
             
-            log("Creating audio level timer (60 FPS, ~16ms interval)", level: .info)
+            self.log("Creating audio level timer (60 FPS, ~16ms interval)", level: .info)
             self.audioLevelTimer = Timer.scheduledTimer(withTimeInterval: 0.016, repeats: true) { [weak self] _ in
                 guard let self = self else { return }
                 
@@ -513,7 +521,7 @@ class DictationManager: NSObject, FlutterStreamHandler {
                 }
                 
                 guard shouldContinue else {
-                    log("Should not continue streaming, stopping timer", level: .info)
+                    self.log("Should not continue streaming, stopping timer", level: .info)
                     self.stopAudioLevelStreaming()
                     return
                 }
@@ -522,16 +530,16 @@ class DictationManager: NSObject, FlutterStreamHandler {
                 self.sendAudioLevel(level)
             }
             
-            log("Timer created, audioLevelTimer is nil: \(self.audioLevelTimer == nil)", level: .info)
+            self.log("Timer created, audioLevelTimer is nil: \(self.audioLevelTimer == nil)", level: .info)
             
             // Add timer to main run loop to ensure it runs during UI interactions
             if let timer = self.audioLevelTimer {
                 RunLoop.main.add(timer, forMode: .common)
-                log("Audio level timer created and added to run loop", level: .info)
+                self.log("Audio level timer created and added to run loop", level: .info)
             } else {
-                log("ERROR: Failed to create audio level timer!", level: .error)
+                self.log("ERROR: Failed to create audio level timer!", level: .error)
             }
-            log("=== EXITING MAIN QUEUE ASYNC BLOCK ===", level: .info)
+            self.log("=== EXITING MAIN QUEUE ASYNC BLOCK ===", level: .info)
         }
         log("Dispatched to main queue, about to exit function", level: .info)
         log("=== START AUDIO LEVEL STREAMING COMPLETE ===", level: .info)

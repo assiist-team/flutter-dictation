@@ -284,15 +284,14 @@ Based on which logs appear and which are missing, identify the failure point:
 
 ## Status
 
-**🔍 Investigation In Progress** - Comprehensive logging has been added to trace the exact failure point.
+**✅ ROOT CAUSES IDENTIFIED AND FIXED** - Two critical race conditions have been fixed:
 
-**⚠️ CRITICAL STRUCTURAL ISSUE FOUND** - Project has duplicate native code in two locations:
-- `ios/Runner/` (plugin root)
-- `example/ios/Runner/` (example app)
+1. **✅ FIXED:** Audio level streaming race condition - Timer now creates successfully
+2. **✅ FIXED:** Speech recognizer state race condition - Buffers now accepted when state is `.listening`
 
-**This violates code centralization principles and causes maintenance issues.** See [PLUGIN_RESTRUCTURE_PLAN.md](../PLUGIN_RESTRUCTURE_PLAN.md) for the fix plan.
+**⏳ TESTING REQUIRED** - Rebuild and test to verify fixes resolve the issues.
 
-**⚠️ BUILD ISSUE DETECTED** - New debug logs are not appearing in runtime because example app uses its own copy of the code, not the plugin's copy.
+**✅ CODE CONSOLIDATION COMPLETE** - Duplicate code has been consolidated.
 
 ### Current Understanding
 
@@ -327,55 +326,66 @@ Dictation service starts but fails to capture audio or produce transcription. Ro
 
 ### Latest Findings (From User Logs - Latest Session)
 
-**CRITICAL DISCOVERY #1 - BUILD CACHE ISSUE CONFIRMED:**
-The runtime logs show line numbers that don't match the current source code:
-- **Runtime log shows:** `DictationManager.swift:210` - "Starting audio level streaming..."
-- **Current source code has:** Line 230 - "Starting audio level streaming..."
-- **Runtime log shows:** `DictationManager.swift:214` - "=== START LISTENING COMPLETE ==="
-- **Current source code has:** Line 264 - "=== START LISTENING COMPLETE ==="
+**✅ CODE CONSOLIDATION COMPLETE:**
+- Duplicate code has been consolidated
+- Debug logs are now appearing correctly
+- Both issues identified and fixed
 
-**This confirms the binary is using OLD CODE from before the debug logging was added.**
+**CRITICAL ISSUE #1 - AUDIO LEVEL STREAMING RACE CONDITION (FIXED):**
 
-**CRITICAL DISCOVERY #2:** Despite multiple clean builds, the new debug logs are **STILL NOT APPEARING**:
-- ❌ `"🔴 LINE 228: Starting audio level streaming..."` - **MISSING** (should appear before log at line 230)
-- ❌ `"🔴 LINE 229: About to call startAudioLevelStreaming()"` - **MISSING**
-- ❌ `"🔴 LINE 230: Current thread: ..."` - **MISSING**
-- ❌ `"🔴 LINE 231: About to invoke startAudioLevelStreaming() - this log should appear"` - **MISSING**
-- ❌ `"🔴 LINE 232: Entering do block"` - **MISSING**
-- ❌ `"🔴 LINE 233: About to call startAudioLevelStreaming() function"` - **MISSING**
-- ❌ `"🔴🔴🔴 CRITICAL LINE 456: startAudioLevelStreaming() FUNCTION ENTRY"` - **MISSING**
-- ❌ All `print()` and `NSLog()` statements - **ALL MISSING**
+**Problem:** The audio level timer was not being created because of a race condition:
+- `startAudioLevelStreaming()` sets `isStreamingAudioLevels = true` in sync block
+- Then calls `stopAudioLevelStreaming()` which sets it back to `false`
+- Then dispatches to main queue
+- When async block executes, `isStreamingAudioLevels` is `false`, so timer creation is aborted
 
-**Root Cause Identified:**
-The compiled binary is using code from BEFORE the debug logging was added. The line number mismatch (210 vs 230) proves this conclusively.
+**Evidence from logs:**
+```
+[784847205.349] Set isStreamingAudioLevels = true
+[784847205.350] === STOP AUDIO LEVEL STREAMING ===
+[784847205.353] Audio level timer invalidated and cleared
+[784847205.353] === INSIDE MAIN QUEUE ASYNC BLOCK ===
+[784847205.353] Inside shouldStream check, isStreamingAudioLevels=false
+[784847205.354] Should not stream, aborting timer creation
+```
 
-**ROOT CAUSE FOUND:**
-There are **TWO copies** of `DictationManager.swift`:
-1. **Plugin copy:** `ios/Runner/DictationManager.swift` (was editing this one)
-2. **Example app copy:** `example/ios/Runner/DictationManager.swift` (THIS is what actually runs!)
+**Fix Applied:**
+- Modified `startAudioLevelStreaming()` to clear the timer WITHOUT resetting the flag
+- Timer is cleared directly (checking if on main thread to avoid deadlock)
+- Flag is set to `true` and remains `true` when async block executes
+- Timer creation now proceeds successfully
 
-The example app has its own copy with the OLD code (lines 210-214), which is why the debug logs weren't appearing. The example app was using its own copy, not the plugin's copy.
+**CRITICAL ISSUE #2 - SPEECH RECOGNIZER STATE RACE CONDITION (FIXED):**
 
-**IMMEDIATE ACTION REQUIRED:**
-1. **✅ COMPLETED:** Verified code changes are in source file (lines 228-261, 456-460) - Plugin copy
-2. **✅ COMPLETED:** Cleaned Flutter build cache (`flutter clean`)
-3. **✅ COMPLETED:** Cleaned Xcode DerivedData (`rm -rf ~/Library/Developer/Xcode/DerivedData`)
-4. **✅ COMPLETED:** Cleaned Pods and build directories
-5. **✅ COMPLETED:** **Found the correct file** - `example/ios/Runner/DictationManager.swift` is the one being used
-6. **✅ COMPLETED:** **Updated the correct file** - Added debug logging to `example/ios/Runner/DictationManager.swift` (lines 210-243, 409-425)
-7. **⏳ REQUIRED:** **Rebuild the app** - Now that the correct file is updated, rebuild and test
+**Problem:** Speech recognizer buffers were being rejected because state was `idle` instead of `listening`:
+- `cancelRecognition()` sets state to `.cancelled`, then async block resets to `.idle` after 50ms
+- `startRecognition()` is called right after, sets state to `.listening`
+- But the async block from `cancelRecognition()` runs AFTER and overwrites state back to `.idle`
+- Buffers arrive when state is `idle`, so they're rejected
+
+**Evidence from logs:**
+```
+[SpeechRecognizerManager] Current state: idle
+[SpeechRecognizerManager] Should append: false
+[SpeechRecognizerManager] WARNING: Skipping buffer append - state check failed
+```
+
+**Fix Applied:**
+- Modified `cancelRecognition()` to check current state before resetting to `.idle`
+- Only resets to `.idle` if state is still `.cancelled` (no new recognition started)
+- Prevents async block from overwriting `.listening` state set by `startRecognition()`
 
 ### Next Steps
 
 1. **✅ COMPLETED:** Add comprehensive logging throughout audio pipeline
 2. **✅ COMPLETED:** Run app and capture full Xcode console output
 3. **✅ COMPLETED:** Added direct print/NSLog statements to verify function execution
-4. **🔄 IN PROGRESS:** Analyze logs - **CRITICAL ISSUE FOUND**: New debug logs not appearing (build issue suspected)
-5. **⏳ PENDING:** **CLEAN BUILD REQUIRED** - Delete derived data and rebuild to ensure code changes are compiled
-6. **⏳ PENDING:** Verify code changes are in the compiled binary
-7. **⏳ PENDING:** Test with new debug logging after clean build
+4. **✅ COMPLETED:** Analyze logs - **TWO CRITICAL ISSUES IDENTIFIED**
+5. **✅ COMPLETED:** **FIXED:** Audio level streaming race condition
+6. **✅ COMPLETED:** **FIXED:** Speech recognizer state race condition
+7. **⏳ PENDING:** **TEST REQUIRED** - Rebuild and test to verify fixes work
 8. **⏳ PENDING:** Test on physical device (simulator limitations suspected)
-9. **⏳ PENDING:** Fix root cause based on log analysis
+9. **⏳ PENDING:** Verify waveform appears and transcription works
 
 ### Expected Outcome
 

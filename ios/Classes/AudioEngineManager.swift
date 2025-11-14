@@ -105,6 +105,15 @@ class AudioEngineManager {
     
     // MARK: - Audio Engine Setup
     
+    /// Safely prepares an AVAudioEngine.
+    /// - Parameter engine: The AVAudioEngine to prepare
+    /// - Throws: NSError if preparation fails
+    private func safePrepareAudioEngine(_ engine: AVAudioEngine) throws {
+        // AVAudioEngine.prepare() doesn't throw in Swift, but we keep this wrapper
+        // for consistency with the original implementation and potential future error handling
+        engine.prepare()
+    }
+    
     private func setupAudioEngine() throws {
         // Check if we're running on a simulator
         #if targetEnvironment(simulator)
@@ -263,12 +272,7 @@ class AudioEngineManager {
         }
         
         // Prepare the audio engine (required before installing tap)
-        // Use safe helper function to catch Objective-C exceptions
-        var error: NSError?
-        let success = safePrepareAudioEngine(audioEngine, &error)
-        if !success, let error = error {
-            throw error
-        }
+        try safePrepareAudioEngine(audioEngine)
     }
     
     private func installAudioTap() {

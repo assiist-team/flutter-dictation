@@ -119,11 +119,12 @@ class SpeechRecognizerManager {
         }
         
         // Check authorization
-        guard isAuthorized else {
+        if !isAuthorized {
             let authorized = await requestAuthorization()
             guard authorized else {
                 throw SpeechRecognizerError.notAuthorized
             }
+            isAuthorized = true
         }
         
         // Cancel any existing recognition task
@@ -289,10 +290,14 @@ class SpeechRecognizerManager {
             self.state = .cancelled
         }
         
-        // Reset to idle after a brief delay
+        // Reset to idle after a brief delay, but only if still cancelled
+        // (don't overwrite if a new recognition has started)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
             self?.stateQueue.sync {
-                self?.state = .idle
+                // Only reset to idle if still cancelled (no new recognition started)
+                if self?.state == .cancelled {
+                    self?.state = .idle
+                }
             }
         }
         

@@ -18,8 +18,7 @@ A Flutter plugin providing native iOS dictation with low-latency speech recognit
   # Flutter.framework does not contain a i386 slice.
   s.pod_target_xcconfig = { 
     'DEFINES_MODULE' => 'YES', 
-    'EXCLUDED_ARCHS[sdk=iphonesimulator*]' => 'i386',
-    'SWIFT_OBJC_BRIDGING_HEADER' => '${PODS_TARGET_SRCROOT}/Classes/FlutterDictation-Bridging-Header.h'
+    'EXCLUDED_ARCHS[sdk=iphonesimulator*]' => 'i386'
   }
 end
 
