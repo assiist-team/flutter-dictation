@@ -1,5 +1,7 @@
 import AVFoundation
+import AudioToolbox
 import Foundation
+import UIKit
 
 /// Manages AVAudioEngine for low-latency audio recording and waveform visualization.
 /// Provides real-time audio buffer access with optimal configuration for speech recognition.
@@ -23,6 +25,7 @@ class AudioEngineManager {
     private var currentAudioLevel: Float = 0.0
     private var state: AudioEngineState = .idle
     private var bufferCount: Int = 0  // Track buffer count for logging
+    private var isSessionActivated: Bool = false  // Track session activation state to avoid unnecessary reactivations
     
     // Audio level smoothing for waveform visualization
     private let levelSmoothingFactor: Float = 0.3  // Smooth transitions
@@ -318,17 +321,6 @@ class AudioEngineManager {
             log("Audio engine stopped", level: .info)
         }
         
-        // Deactivate audio session first to ensure clean state
-        // This allows us to reconfigure the session properly
-        log("Deactivating audio session to ensure clean state...", level: .info)
-        do {
-            try audioSession.setActive(false, options: .notifyOthersOnDeactivation)
-            log("Audio session deactivated successfully", level: .info)
-        } catch {
-            // Ignore errors when deactivating - session might not be active
-            log("Warning: Failed to deactivate audio session (may not be active): \(error)", level: .warning)
-        }
-        
         // Set audio session category FIRST (before requesting permission)
         // Setting the category doesn't require permission - it just declares intent
         // This is required for the permission dialog to appear properly
@@ -459,41 +451,56 @@ class AudioEngineManager {
             )
         }
         
-        log("Activating audio session...", level: .info)
-        let activationStartTime = CFAbsoluteTimeGetCurrent()
-        do {
-            try audioSession.setActive(true)
-            let activationDuration = (CFAbsoluteTimeGetCurrent() - activationStartTime) * 1000
-            log("Audio session activated successfully in \(String(format: "%.2f", activationDuration))ms", level: .info)
-            logAudioSessionState("after-activation")
-        } catch {
-            let activationDuration = (CFAbsoluteTimeGetCurrent() - activationStartTime) * 1000
-            log("FAILED to activate audio session after \(String(format: "%.2f", activationDuration))ms: \(error)", level: .error)
-            log("Error type: \(type(of: error))", level: .error)
-            log("Error domain: \((error as NSError).domain)", level: .error)
-            log("Error code: \((error as NSError).code)", level: .error)
-            log("Error userInfo: \((error as NSError).userInfo)", level: .error)
-            logAudioSessionState("activation-failed")
-            
-            // Check if another app is using audio
-            if audioSession.isOtherAudioPlaying {
-                log("Another app is using audio", level: .error)
-                throw NSError(
-                    domain: "AudioEngineManager",
-                    code: -1,
-                    userInfo: [
-                        NSLocalizedDescriptionKey: "Cannot activate audio session: another app is using the microphone. Please close other audio apps and try again."
-                    ]
-                )
+        // Only activate if not already active
+        if !isSessionActivated {
+            log("Activating audio session...", level: .info)
+            let activationStartTime = CFAbsoluteTimeGetCurrent()
+            do {
+                try audioSession.setActive(true)
+                isSessionActivated = true
+                let activationDuration = (CFAbsoluteTimeGetCurrent() - activationStartTime) * 1000
+                log("Audio session activated successfully in \(String(format: "%.2f", activationDuration))ms", level: .info)
+                logAudioSessionState("after-activation")
+            } catch let error as NSError {
+                let activationDuration = (CFAbsoluteTimeGetCurrent() - activationStartTime) * 1000
+                // If error is "already active", that's OK - just update flag
+                if error.domain == NSOSStatusErrorDomain && error.localizedDescription.localizedCaseInsensitiveContains("already active") {
+                    // Some SDKs no longer expose the historic `kAudioSessionAlreadyActive` symbol.
+                    // Fall back to a runtime check of the error description to detect the
+                    // "already active" condition and treat it as non-fatal.
+                    log("Session already active (system state), updating flag", level: .info)
+                    isSessionActivated = true
+                } else {
+                    log("FAILED to activate audio session after \(String(format: "%.2f", activationDuration))ms: \(error)", level: .error)
+                    log("Error type: \(type(of: error))", level: .error)
+                    log("Error domain: \(error.domain)", level: .error)
+                    log("Error code: \(error.code)", level: .error)
+                    log("Error userInfo: \(error.userInfo)", level: .error)
+                    logAudioSessionState("activation-failed")
+                    
+                    // Check if another app is using audio
+                    if audioSession.isOtherAudioPlaying {
+                        log("Another app is using audio", level: .error)
+                        throw NSError(
+                            domain: "AudioEngineManager",
+                            code: -1,
+                            userInfo: [
+                                NSLocalizedDescriptionKey: "Cannot activate audio session: another app is using the microphone. Please close other audio apps and try again."
+                            ]
+                        )
+                    }
+                    
+                    throw NSError(
+                        domain: "AudioEngineManager",
+                        code: -1,
+                        userInfo: [
+                            NSLocalizedDescriptionKey: "Failed to activate audio session: \(error.localizedDescription). Please ensure microphone permission is granted and no other app is using the microphone."
+                        ]
+                    )
+                }
             }
-            
-            throw NSError(
-                domain: "AudioEngineManager",
-                code: -1,
-                userInfo: [
-                    NSLocalizedDescriptionKey: "Failed to activate audio session: \(error.localizedDescription). Please ensure microphone permission is granted and no other app is using the microphone."
-                ]
-            )
+        } else {
+            log("Session already active (tracked state), skipping activation", level: .info)
         }
         
         let configDuration = (CFAbsoluteTimeGetCurrent() - sessionStartTime) * 1000
@@ -783,6 +790,21 @@ class AudioEngineManager {
             name: AVAudioSession.routeChangeNotification,
             object: audioSession
         )
+        
+        // Listen for app backgrounding to reset session state
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleAppDidEnterBackground(_:)),
+            name: UIApplication.didEnterBackgroundNotification,
+            object: nil
+        )
+    }
+    
+    @objc private func handleAppDidEnterBackground(_ notification: Notification) {
+        // App backgrounded - mark session as deactivated
+        // Session will need to be reactivated when app returns to foreground
+        log("App entered background, marking session as deactivated", level: .info)
+        isSessionActivated = false
     }
     
     @objc private func handleAudioSessionInterruption(_ notification: Notification) {
@@ -794,7 +816,9 @@ class AudioEngineManager {
         
         switch type {
         case .began:
-            // Interruption started - pause recording
+            // Interruption started - pause recording and mark session as deactivated
+            // Another app has taken control of audio, so our session is no longer active
+            isSessionActivated = false
             if state == .recording {
                 audioEngine.pause()
             }
@@ -805,10 +829,14 @@ class AudioEngineManager {
                 let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
                 if options.contains(.shouldResume) && state == .recording {
                     do {
-                        try audioSession.setActive(true)
+                        // Only reactivate if not already active
+                        if !isSessionActivated {
+                            try audioSession.setActive(true)
+                            isSessionActivated = true
+                        }
                         try audioEngine.start()
                     } catch {
-                        print("AudioEngineManager: Failed to resume after interruption: \(error)")
+                        log("Failed to resume after interruption: \(error)", level: .error)
                         state = .stopped
                     }
                 }
