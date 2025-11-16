@@ -20,8 +20,9 @@ class WaveformPainter extends CustomPainter {
       ..color = color
       ..style = PaintingStyle.fill;
 
-    // Use fewer bars for a smoother, less aggressive look
-    final int visibleBars = math.min(levels.length, 50);
+    // Fixed number of bars for consistent layout (like ChatGPT)
+    // Always show 50 bars regardless of data length
+    final int visibleBars = 50;
     final barSpacing = 2.0; // Spacing between bars
     final totalSpacing = barSpacing * (visibleBars - 1);
     final availableWidth = size.width - totalSpacing;
@@ -33,11 +34,11 @@ class WaveformPainter extends CustomPainter {
     // Minimum bar height for visual feedback even at low volumes
     final minBarHeight = 2.0;
 
-    // Sample levels evenly across the available data
-    final step = levels.length / visibleBars;
+    // Show the most recent `visibleBars` samples (right-aligned)
+    final startIndex = math.max(0, levels.length - visibleBars);
 
     for (int i = 0; i < visibleBars; i++) {
-      final sourceIndex = (i * step).floor();
+      final sourceIndex = startIndex + i;
       final level = levels[sourceIndex];
       
       // Apply smoother scaling function (square root) to reduce aggressiveness
@@ -69,8 +70,9 @@ class WaveformPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(WaveformPainter oldDelegate) {
-    return oldDelegate.levels.length != levels.length ||
-        oldDelegate.color != color ||
+    // Since buffer is now fixed-size, length won't change
+    // Only repaint if color changes or data changes
+    return oldDelegate.color != color ||
         (levels.isNotEmpty &&
             oldDelegate.levels.isNotEmpty &&
             oldDelegate.levels.last != levels.last);
