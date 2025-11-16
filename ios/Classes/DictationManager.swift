@@ -487,7 +487,7 @@ class DictationManager: NSObject, FlutterStreamHandler {
             log("Set isStreamingAudioLevels = true", level: .info)
         }
         
-        // Create timer on main thread for 60 FPS (every ~16ms)
+        // Create timer on main thread for 30 FPS (every ~33ms)
         log("About to dispatch to main queue", level: .info)
         log("Current thread before dispatch: \(Thread.isMainThread ? "MAIN" : "BACKGROUND")", level: .info)
         DispatchQueue.main.async { [weak self] in
@@ -511,8 +511,8 @@ class DictationManager: NSObject, FlutterStreamHandler {
                 return
             }
             
-            self.log("Creating audio level timer (60 FPS, ~16ms interval)", level: .info)
-            self.audioLevelTimer = Timer.scheduledTimer(withTimeInterval: 0.016, repeats: true) { [weak self] _ in
+            self.log("Creating audio level timer (30 FPS, ~33ms interval)", level: .info)
+            self.audioLevelTimer = Timer.scheduledTimer(withTimeInterval: 0.033, repeats: true) { [weak self] _ in
                 guard let self = self else { return }
                 
                 // Check if we should still be streaming
