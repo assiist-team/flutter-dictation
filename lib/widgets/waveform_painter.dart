@@ -7,18 +7,16 @@ class WaveformPainter extends CustomPainter {
   final List<double> levels;
   final Color color;
 
-  WaveformPainter({
-    required this.levels,
-    required this.color,
-  });
+  WaveformPainter({required this.levels, required this.color});
 
   @override
   void paint(Canvas canvas, Size size) {
     if (levels.isEmpty) return;
 
-    final paint = Paint()
-      ..color = color
-      ..style = PaintingStyle.fill;
+    final paint =
+        Paint()
+          ..color = color
+          ..style = PaintingStyle.fill;
 
     // Fixed number of bars for consistent layout (like ChatGPT)
     // Always show 50 bars regardless of data length
@@ -28,28 +26,31 @@ class WaveformPainter extends CustomPainter {
     final availableWidth = size.width - totalSpacing;
     final barWidth = availableWidth / visibleBars;
     final centerY = size.height / 2;
-    
+
     // Maximum bar height as percentage of available height (less aggressive)
-    final maxBarHeightRatio = 0.75;
+    final maxBarHeightRatio = 0.9;
     // Minimum bar height for visual feedback even at low volumes
     final minBarHeight = 2.0;
+    const amplitudeShapeExponent = 1.25;
 
     // Show the most recent `visibleBars` samples (right-aligned)
     final startIndex = math.max(0, levels.length - visibleBars);
 
     for (int i = 0; i < visibleBars; i++) {
       final sourceIndex = startIndex + i;
-      final level = levels[sourceIndex];
-      
-      // Apply smoother scaling function (square root) to reduce aggressiveness
-      final smoothedLevel = math.sqrt(level);
-      
+      final level = levels[sourceIndex].clamp(0.0, 1.0);
+
+      // Shape levels with a convex curve so high amplitudes don't look flat.
+      final shapedLevel = math.pow(level, amplitudeShapeExponent).toDouble();
+      // Blend a little of the raw level back in to keep quieter speech visible.
+      final blendedLevel = (shapedLevel * 0.85) + (level * 0.15);
+
       // Calculate bar height with max ratio and minimum height
       final barHeight = math.max(
         minBarHeight,
-        smoothedLevel * size.height * maxBarHeightRatio,
+        blendedLevel * size.height * maxBarHeightRatio,
       );
-      
+
       final x = i * (barWidth + barSpacing);
 
       // Draw bar centered vertically
@@ -78,4 +79,3 @@ class WaveformPainter extends CustomPainter {
             oldDelegate.levels.last != levels.last);
   }
 }
-

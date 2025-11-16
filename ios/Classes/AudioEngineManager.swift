@@ -727,28 +727,51 @@ class AudioEngineManager {
     // MARK: - Audio Level Calculation
     
     /// Calculates audio level from buffer for waveform visualization.
+    /// Returns a blended RMS/peak based value so the waveform retains contrast.
     /// - Parameter buffer: Audio PCM buffer
     /// - Returns: Normalized audio level (0.0 - 1.0)
     private func calculateAudioLevel(from buffer: AVAudioPCMBuffer) -> Float {
         guard let channelData = buffer.floatChannelData else { return 0.0 }
         
-        let channelDataValue = channelData.pointee
-        let channelDataValueArray = stride(
-            from: 0,
-            to: Int(buffer.frameLength),
-            by: buffer.stride
-        ).map { channelDataValue[$0] }
+        let frameLength = Int(buffer.frameLength)
+        guard frameLength > 0 else { return 0.0 }
         
-        // Calculate RMS (Root Mean Square)
-        let sumOfSquares = channelDataValueArray.map { $0 * $0 }.reduce(0, +)
-        let rms = sqrt(sumOfSquares / Float(buffer.frameLength))
+        // AVAudioPCMBuffer delivers non-interleaved Float32 samples, so we can walk
+        // the first channel linearly for stable RMS / peak computation.
+        let channelDataPointer = channelData.pointee
         
-        // Convert to decibels
-        let avgPower = 20 * log10(max(rms, 1e-10)) // Avoid log(0)
+        var sumOfSquares: Float = 0.0
+        var peakSample: Float = 0.0
         
-        // Normalize to 0.0 - 1.0 range (assuming -60dB to 0dB range)
-        let normalizedLevel = (avgPower + 60) / 60
-        return max(0.0, min(1.0, normalizedLevel))
+        for frameIndex in 0..<frameLength {
+            let sample = channelDataPointer[frameIndex]
+            sumOfSquares += sample * sample
+            peakSample = max(peakSample, abs(sample))
+        }
+        
+        let rms = sqrt(sumOfSquares / Float(frameLength))
+        let dbLevel = 20 * log10(max(rms, 1e-10)) // Avoid log(0)
+        
+        // Map a broad decibel range into 0-1 so quieter speech still registers.
+        let minimumDecibels: Float = -75.0
+        let maximumDecibels: Float = -15.0
+        let clampedDbLevel = min(max(dbLevel, minimumDecibels), maximumDecibels)
+        let normalizedDecibelLevel = (clampedDbLevel - minimumDecibels) / (maximumDecibels - minimumDecibels)
+        
+        // Blend in linear RMS/peak components to keep subtle variations visible.
+        let linearGain: Float = 4.0
+        let normalizedRmsLevel = min(rms * linearGain, 1.0)
+        let normalizedPeakLevel = min(peakSample * linearGain, 1.0)
+        
+        let blendedLevel = (normalizedDecibelLevel * 0.55) +
+                           (normalizedRmsLevel * 0.30) +
+                           (normalizedPeakLevel * 0.15)
+        
+        // Shape the curve so values near 1.0 retain contrast similar to ChatGPT's waveform.
+        let amplitudeShapeExponent: Float = 1.2
+        let shapedLevel = powf(blendedLevel, amplitudeShapeExponent)
+        
+        return max(0.0, min(1.0, shapedLevel))
     }
     
     /// Gets the current audio level for waveform visualization.
