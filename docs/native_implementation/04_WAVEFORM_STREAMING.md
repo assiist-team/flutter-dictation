@@ -150,16 +150,19 @@ void _setupEventStream({
 class NativeWaveform extends StatelessWidget {
   final WaveformController controller;
   final double height;
-  final Color color;
-  
+  final Color? color;
+
   const NativeWaveform({
     required this.controller,
     this.height = 40.0,
-    this.color = CupertinoColors.systemBlue,
+    this.color,
   });
-  
+
   @override
   Widget build(BuildContext context) {
+    final waveformColor =
+        color ?? DictationStyles.secondaryTextColor(context);
+
     return ListenableBuilder(
       listenable: controller,
       builder: (context, child) {
@@ -167,7 +170,7 @@ class NativeWaveform extends StatelessWidget {
           size: Size(double.infinity, height),
           painter: WaveformPainter(
             levels: controller.waveformData,
-            color: color,
+            color: waveformColor,
           ),
         );
       },

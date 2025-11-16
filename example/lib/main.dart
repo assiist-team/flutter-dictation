@@ -321,8 +321,6 @@ class _DictationExampleScreenState extends State<DictationExampleScreen> {
                                   child: NativeWaveform(
                                     controller: _waveformController,
                                     height: 30.0,
-                                    color: CupertinoColors.systemBlue
-                                        .resolveFrom(context),
                                   ),
                                 ),
                                 // Timer and Checkmark (Right)

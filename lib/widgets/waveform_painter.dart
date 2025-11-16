@@ -1,6 +1,8 @@
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 /// Custom painter for drawing waveform visualization from audio level data.
+/// Styled to be smooth and less aggressive, similar to ChatGPT's waveform.
 class WaveformPainter extends CustomPainter {
   final List<double> levels;
   final Color color;
@@ -16,27 +18,50 @@ class WaveformPainter extends CustomPainter {
 
     final paint = Paint()
       ..color = color
-      ..strokeWidth = 2.0
       ..style = PaintingStyle.fill;
 
-    final barWidth = size.width / levels.length;
+    // Use fewer bars for a smoother, less aggressive look
+    final int visibleBars = math.min(levels.length, 50);
+    final barSpacing = 2.0; // Spacing between bars
+    final totalSpacing = barSpacing * (visibleBars - 1);
+    final availableWidth = size.width - totalSpacing;
+    final barWidth = availableWidth / visibleBars;
     final centerY = size.height / 2;
+    
+    // Maximum bar height as percentage of available height (less aggressive)
+    final maxBarHeightRatio = 0.75;
+    // Minimum bar height for visual feedback even at low volumes
+    final minBarHeight = 2.0;
 
-    for (int i = 0; i < levels.length; i++) {
-      final level = levels[i];
-      final barHeight = level * size.height;
-      final x = i * barWidth;
+    // Sample levels evenly across the available data
+    final step = levels.length / visibleBars;
+
+    for (int i = 0; i < visibleBars; i++) {
+      final sourceIndex = (i * step).floor();
+      final level = levels[sourceIndex];
+      
+      // Apply smoother scaling function (square root) to reduce aggressiveness
+      final smoothedLevel = math.sqrt(level);
+      
+      // Calculate bar height with max ratio and minimum height
+      final barHeight = math.max(
+        minBarHeight,
+        smoothedLevel * size.height * maxBarHeightRatio,
+      );
+      
+      final x = i * (barWidth + barSpacing);
 
       // Draw bar centered vertically
       final rect = Rect.fromLTWH(
         x,
         centerY - barHeight / 2,
-        barWidth - 1,
+        barWidth,
         barHeight,
       );
 
+      // More rounded corners for smoother appearance
       canvas.drawRRect(
-        RRect.fromRectAndRadius(rect, const Radius.circular(2)),
+        RRect.fromRectAndRadius(rect, Radius.circular(barWidth / 2)),
         paint,
       );
     }

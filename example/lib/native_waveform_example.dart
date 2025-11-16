@@ -300,7 +300,7 @@ class _NativeWaveformExampleScreenState
                                   child: NativeWaveform(
                                     controller: _waveformController,
                                     height: 30.0,
-                                    color: CupertinoColors.systemBlue
+                                    color: CupertinoColors.secondaryLabel
                                         .resolveFrom(context),
                                   ),
                                 ),

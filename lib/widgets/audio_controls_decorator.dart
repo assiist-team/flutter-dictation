@@ -85,6 +85,9 @@ class AudioControlsDecorator extends StatelessWidget {
     // If listening, show the full control row
     const double controlRowHeight = 40.0;
     const double waveformHeight = 30.0;
+    
+    // Use the same color for buttons and waveform to ensure they match
+    final buttonColor = DictationStyles.secondaryTextColor(context);
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -103,7 +106,7 @@ class AudioControlsDecorator extends StatelessWidget {
                   onPressed: onCancelPressed,
                   child: Icon(
                     CupertinoIcons.xmark_circle_fill,
-                    color: DictationStyles.secondaryTextColor(context),
+                    color: buttonColor,
                     size: 20.0,
                   ),
                 ),
@@ -114,7 +117,7 @@ class AudioControlsDecorator extends StatelessWidget {
                   child: NativeWaveform(
                     controller: waveformController!,
                     height: waveformHeight,
-                    color: DictationStyles.secondaryTextColor(context),
+                    color: buttonColor,
                   ),
                 ),
               if (waveformController == null) const Spacer(),
@@ -126,7 +129,7 @@ class AudioControlsDecorator extends StatelessWidget {
                   Text(
                     _formatDuration(elapsedTime),
                     style: DictationStyles.inputTextStyle(context).copyWith(
-                      color: DictationStyles.secondaryTextColor(context),
+                      color: buttonColor,
                       fontSize: 13,
                     ),
                   ),
@@ -145,7 +148,7 @@ class AudioControlsDecorator extends StatelessWidget {
                       onPressed: onMicPressed,
                       child: Icon(
                         CupertinoIcons.checkmark_circle_fill,
-                        color: DictationStyles.secondaryTextColor(context),
+                        color: buttonColor,
                         size: 20.0,
                       ),
                     ),
