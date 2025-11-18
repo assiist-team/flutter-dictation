@@ -26,6 +26,9 @@ class AudioEngineManager {
     private var state: AudioEngineState = .idle
     private var bufferCount: Int = 0  // Track buffer count for logging
     private var isSessionActivated: Bool = false  // Track session activation state to avoid unnecessary reactivations
+    private var audioPreservationWriter: AudioPreservationWriter?
+    private var pendingAudioBuffers: [AVAudioPCMBuffer] = []  // Queue buffers until writer is ready
+    private let bufferQueue = DispatchQueue(label: "com.flutterdictation.audioEngine.bufferQueue")
     
     // Audio level smoothing for waveform visualization
     private let levelSmoothingFactor: Float = 0.3  // Smooth transitions
@@ -299,8 +302,9 @@ class AudioEngineManager {
     
     /// Starts audio recording.
     /// Checks and requests microphone permissions if needed.
+    /// - Parameter audioPreservationRequest: Optional request describing how to persist the raw audio stream.
     /// - Throws: Audio engine start errors or permission errors
-    func startRecording() async throws {
+    func startRecording(audioPreservationRequest: AudioPreservationRequest? = nil) async throws {
         let startTime = CFAbsoluteTimeGetCurrent()
         log("=== START RECORDING START ===", level: .info)
         log("Current state: \(state)", level: .info)
@@ -584,13 +588,47 @@ class AudioEngineManager {
         do {
             try audioEngine.start()
             let engineDuration = (CFAbsoluteTimeGetCurrent() - engineStartTime) * 1000
-            let totalDuration = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
             log("Audio engine started successfully in \(String(format: "%.2f", engineDuration))ms", level: .info)
-            log("Total startRecording duration: \(String(format: "%.2f", totalDuration))ms", level: .info)
             log("Audio engine is running: \(audioEngine.isRunning)", level: .info)
             logAudioEngineState("after-start")
             logAudioSessionState("after-start")
             logEvent("audio_engine_start", metadata: ["duration_ms": engineDuration])
+            
+            // Prepare optional audio preservation writer AFTER engine starts (non-blocking for startup).
+            // Buffers that arrive before the writer is ready are queued and flushed once ready.
+            // This defers file I/O operations to avoid blocking the critical startup path while ensuring no audio is lost.
+            if let preservationRequest = audioPreservationRequest {
+                log("Audio preservation requested. Preparing writer at \(preservationRequest.fileURL.path)", level: .info)
+                let preservationStartTime = CFAbsoluteTimeGetCurrent()
+                do {
+                    try startAudioPreservationIfNeeded(request: preservationRequest)
+                    let preservationDuration = (CFAbsoluteTimeGetCurrent() - preservationStartTime) * 1000
+                    log("Audio preservation writer ready in \(String(format: "%.2f", preservationDuration))ms", level: .info)
+                    logEvent("audio_preservation_ready", metadata: ["duration_ms": preservationDuration, "destination": preservationRequest.fileURL.path])
+                    
+                    // Flush any buffers that arrived before the writer was ready
+                    flushPendingBuffers()
+                } catch {
+                    let preservationDuration = (CFAbsoluteTimeGetCurrent() - preservationStartTime) * 1000
+                    log("Failed to prepare audio preservation writer after \(String(format: "%.2f", preservationDuration))ms: \(error)", level: .error)
+                    logEvent("audio_preservation_failed", metadata: [
+                        "duration_ms": preservationDuration,
+                        "destination": preservationRequest.fileURL.path,
+                        "error": "\(error)"
+                    ])
+                    // Clear pending buffers since writer creation failed
+                    bufferQueue.sync {
+                        self.pendingAudioBuffers.removeAll()
+                    }
+                    // Don't throw - audio preservation failure shouldn't stop recording
+                    // The writer will just be nil and buffers won't be saved
+                }
+            } else {
+                log("Audio preservation not requested for this session", level: .info)
+            }
+            
+            let totalDuration = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
+            log("Total startRecording duration: \(String(format: "%.2f", totalDuration))ms", level: .info)
         } catch {
             let engineDuration = (CFAbsoluteTimeGetCurrent() - engineStartTime) * 1000
             let totalDuration = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
@@ -648,11 +686,10 @@ class AudioEngineManager {
     }
     
     /// Stops audio recording.
-    func stopRecording() {
-        guard state == .recording else {
-            return
-        }
-        
+    /// - Parameter deletePreservedAudio: When true, deletes any captured audio file.
+    /// - Returns: Metadata describing the preserved audio file, if one exists and wasn't deleted.
+    @discardableResult
+    func stopRecording(deletePreservedAudio: Bool = false) -> AudioPreservationResult? {
         // Stop the audio engine
         if audioEngine.isRunning {
             audioEngine.stop()
@@ -661,12 +698,95 @@ class AudioEngineManager {
         // Remove tap to stop processing buffers
         inputNode.removeTap(onBus: 0)
         
+        // Clear any pending buffers
+        bufferQueue.sync {
+            self.pendingAudioBuffers.removeAll()
+        }
+        
         // Reset audio level
         audioLevelQueue.sync {
             self.currentAudioLevel = 0.0
         }
         
         state = .stopped
+        return stopAudioPreservation(deleteFile: deletePreservedAudio)
+    }
+    
+    // MARK: - Audio Preservation
+    
+    private func startAudioPreservationIfNeeded(request: AudioPreservationRequest) throws {
+        guard audioPreservationWriter == nil else {
+            log("Audio preservation already active, skipping new writer", level: .warning)
+            return
+        }
+        
+        let format = inputNode.inputFormat(forBus: 0)
+        log("Creating audio preservation writer (sampleRate=\(format.sampleRate), channels=\(format.channelCount))", level: .info)
+        audioPreservationWriter = try AudioPreservationWriter(outputURL: request.fileURL, format: format)
+    }
+    
+    /// Copies an AVAudioPCMBuffer to preserve its data (buffers may be reused by the system).
+    private func copyBuffer(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+        guard let format = AVAudioFormat(commonFormat: buffer.format.commonFormat,
+                                        sampleRate: buffer.format.sampleRate,
+                                        channels: buffer.format.channelCount,
+                                        interleaved: buffer.format.isInterleaved) else {
+            return nil
+        }
+        
+        guard let bufferCopy = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: buffer.frameLength) else {
+            return nil
+        }
+        
+        bufferCopy.frameLength = buffer.frameLength
+        
+        // Copy audio data
+        if let srcChannelData = buffer.floatChannelData,
+           let dstChannelData = bufferCopy.floatChannelData {
+            for channel in 0..<Int(buffer.format.channelCount) {
+                let src = srcChannelData[channel]
+                let dst = dstChannelData[channel]
+                memcpy(dst, src, Int(buffer.frameLength) * MemoryLayout<Float>.size)
+            }
+        }
+        
+        return bufferCopy
+    }
+    
+    /// Flushes any buffers that were queued before the writer was ready.
+    private func flushPendingBuffers() {
+        bufferQueue.sync {
+            guard let writer = self.audioPreservationWriter else {
+                self.pendingAudioBuffers.removeAll()
+                return
+            }
+            
+            let count = self.pendingAudioBuffers.count
+            if count > 0 {
+                log("Flushing \(count) queued audio buffers to writer", level: .info)
+                for buffer in self.pendingAudioBuffers {
+                    writer.append(buffer)
+                }
+                self.pendingAudioBuffers.removeAll()
+                log("Flushed \(count) buffers successfully", level: .info)
+            }
+        }
+    }
+    
+    private func stopAudioPreservation(deleteFile: Bool) -> AudioPreservationResult? {
+        guard let writer = audioPreservationWriter else {
+            return nil
+        }
+        
+        log("Stopping audio preservation writer. deleteFile=\(deleteFile)", level: .info)
+        let result = writer.finish(deleteFile: deleteFile)
+        audioPreservationWriter = nil
+        if let result = result {
+            log("Audio preservation completed: path=\(result.fileURL.path), durationMs=\(result.durationMs), sizeBytes=\(result.fileSizeBytes)", level: .info)
+        } else {
+            log("Audio preservation writer cleaned up with no file result (deleteFile=\(deleteFile))", level: .info)
+        }
+        return result
     }
     
     // MARK: - Buffer Processing
@@ -700,6 +820,33 @@ class AudioEngineManager {
         audioLevelQueue.sync {
             self.currentAudioLevel = self.currentAudioLevel * (1.0 - self.levelSmoothingFactor) +
                                    newLevel * self.levelSmoothingFactor
+        }
+        
+        // Persist raw audio if requested.
+        // If writer isn't ready yet, queue the buffer to avoid losing audio.
+        if let writer = audioPreservationWriter {
+            writer.append(buffer)
+        } else if audioPreservationWriter == nil && state == .recording {
+            // Writer not ready yet - queue buffer to preserve audio
+            // Only queue if we're recording (writer might be initializing)
+            bufferQueue.sync {
+                // Create a copy of the buffer since AVAudioPCMBuffer may be reused
+                if let bufferCopy = copyBuffer(buffer) {
+                    self.pendingAudioBuffers.append(bufferCopy)
+                    // Limit queue size to prevent memory issues (keep last ~500ms at 16kHz = ~8000 frames)
+                    let maxFrames = Int(16000 * 0.5) // 500ms worth
+                    var totalFrames = 0
+                    while totalFrames < maxFrames && !self.pendingAudioBuffers.isEmpty {
+                        totalFrames += Int(self.pendingAudioBuffers.first!.frameLength)
+                        if totalFrames >= maxFrames {
+                            // Remove oldest buffers if queue gets too large
+                            self.pendingAudioBuffers.removeFirst()
+                        } else {
+                            break
+                        }
+                    }
+                }
+            }
         }
         
         // Call buffer callback if set

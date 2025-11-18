@@ -40,6 +40,7 @@ class _DictationExampleScreenState extends State<DictationExampleScreen> {
   String _status = 'Initializing...';
   Timer? _recordingTimer;
   Duration _elapsedTime = Duration.zero;
+  DictationAudioFile? _latestAudioFile;
 
   @override
   void initState() {
@@ -112,6 +113,11 @@ class _DictationExampleScreenState extends State<DictationExampleScreen> {
           }
         },
         onError: _onError,
+        onAudioFile: _onAudioFileSaved,
+        options: const DictationSessionOptions(
+          preserveAudio: true,
+          deleteAudioIfCancelled: false,
+        ),
       );
     } catch (e) {
       print("Error during start/listen: $e");
@@ -200,9 +206,21 @@ class _DictationExampleScreenState extends State<DictationExampleScreen> {
     }
   }
 
+  void _onAudioFileSaved(DictationAudioFile file) {
+    print(
+      'Dictation audio saved: ${file.path} (${file.duration.inMilliseconds}ms, ${file.fileSizeBytes} bytes)',
+    );
+    if (!mounted) return;
+    setState(() {
+      _latestAudioFile = file;
+    });
+  }
+
   void _handleMicPressed() async {
     print('[ExampleApp] === MIC BUTTON PRESSED ===');
-    print('[ExampleApp] Current state: _isInitializing=$_isInitializing, _isListening=$_isListening');
+    print(
+      '[ExampleApp] Current state: _isInitializing=$_isInitializing, _isListening=$_isListening',
+    );
     if (_isInitializing) {
       print("Still initializing speech recognition...");
       return;
@@ -247,10 +265,7 @@ class _DictationExampleScreenState extends State<DictationExampleScreen> {
               const SizedBox(height: 20),
               const Text(
                 'Voice Dictation Demo',
-                style: TextStyle(
-                  fontSize: 24,
-                  fontWeight: FontWeight.bold,
-                ),
+                style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
               ),
               const SizedBox(height: 8),
               Text(
@@ -260,6 +275,18 @@ class _DictationExampleScreenState extends State<DictationExampleScreen> {
                   color: CupertinoColors.secondaryLabel.resolveFrom(context),
                 ),
               ),
+              if (_latestAudioFile != null) ...[
+                const SizedBox(height: 4),
+                Text(
+                  'Last audio file: ${_latestAudioFile!.path}\n'
+                  'Duration: ${_latestAudioFile!.duration.inSeconds}s • '
+                  'Size: ${(_latestAudioFile!.fileSizeBytes / 1024).toStringAsFixed(1)} KB',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: CupertinoColors.secondaryLabel.resolveFrom(context),
+                  ),
+                ),
+              ],
               const SizedBox(height: 32),
               Expanded(
                 child: Material(
@@ -275,109 +302,113 @@ class _DictationExampleScreenState extends State<DictationExampleScreen> {
                         mainAxisSize: MainAxisSize.min,
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
-                        CupertinoTextField(
-                          controller: _textController,
-                          focusNode: _focusNode,
-                          placeholder: 'Tap the mic to start dictating...',
-                          placeholderStyle: TextStyle(
-                            color: CupertinoColors.secondaryLabel
-                                .resolveFrom(context)
-                                .withOpacity(0.7),
-                          ),
-                          maxLines: null,
-                          minLines: 6,
-                          keyboardType: TextInputType.multiline,
-                          decoration: BoxDecoration(
-                            color: CupertinoColors.systemBackground.resolveFrom(context),
-                            borderRadius: BorderRadius.circular(8.0),
-                          ),
-                          padding: const EdgeInsets.all(12.0),
-                          style: const TextStyle(fontSize: 16),
-                        ),
-                        const SizedBox(height: 8.0),
-                        // Control row with native waveform
-                        if (_isListening) ...[
-                          Container(
-                            height: 40.0,
-                            padding: const EdgeInsets.symmetric(
-                                vertical: 4.0, horizontal: 8.0),
-                            child: Row(
-                              crossAxisAlignment: CrossAxisAlignment.center,
-                              children: [
-                                // Cancel Button (Left)
-                                CupertinoButton(
-                                  padding: const EdgeInsets.only(right: 8.0),
-                                  minSize: 30,
-                                  onPressed: _cancelListening,
-                                  child: Icon(
-                                    CupertinoIcons.xmark_circle_fill,
-                                    color: CupertinoColors.secondaryLabel
-                                        .resolveFrom(context),
-                                    size: 20.0,
-                                  ),
-                                ),
-                                // Native Waveform (Middle, Expanded)
-                                Expanded(
-                                  child: NativeWaveform(
-                                    controller: _waveformController,
-                                    height: 30.0,
-                                  ),
-                                ),
-                                // Timer and Checkmark (Right)
-                                Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    // Timer Text
-                                    Text(
-                                      _formatDuration(_elapsedTime),
-                                      style: TextStyle(
-                                        color: CupertinoColors.secondaryLabel
-                                            .resolveFrom(context),
-                                        fontSize: 13,
-                                      ),
-                                    ),
-                                    const SizedBox(width: 8.0),
-                                    // Checkmark Button
-                                    CupertinoButton(
-                                      padding: EdgeInsets.zero,
-                                      minSize: 30,
-                                      onPressed: _handleMicPressed,
-                                      child: Icon(
-                                        CupertinoIcons.checkmark_circle_fill,
-                                        color: CupertinoColors.secondaryLabel
-                                            .resolveFrom(context),
-                                        size: 20.0,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ],
-                            ),
-                          ),
-                        ] else ...[
-                          const SizedBox(height: 8.0),
-                          Container(
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
+                          CupertinoTextField(
+                            controller: _textController,
+                            focusNode: _focusNode,
+                            placeholder: 'Tap the mic to start dictating...',
+                            placeholderStyle: TextStyle(
                               color: CupertinoColors.secondaryLabel
                                   .resolveFrom(context)
-                                  .withValues(alpha: 0.1),
+                                  .withOpacity(0.7),
                             ),
-                            child: CupertinoButton(
-                              padding: const EdgeInsets.all(12.0),
-                              minSize: 60,
-                              onPressed: _isInitializing ? null : _handleMicPressed,
-                              child: Icon(
-                                CupertinoIcons.mic,
-                                color: CupertinoColors.secondaryLabel
-                                    .resolveFrom(context),
-                                size: 32.0,
+                            maxLines: null,
+                            minLines: 6,
+                            keyboardType: TextInputType.multiline,
+                            decoration: BoxDecoration(
+                              color: CupertinoColors.systemBackground
+                                  .resolveFrom(context),
+                              borderRadius: BorderRadius.circular(8.0),
+                            ),
+                            padding: const EdgeInsets.all(12.0),
+                            style: const TextStyle(fontSize: 16),
+                          ),
+                          const SizedBox(height: 8.0),
+                          // Control row with native waveform
+                          if (_isListening) ...[
+                            Container(
+                              height: 40.0,
+                              padding: const EdgeInsets.symmetric(
+                                vertical: 4.0,
+                                horizontal: 8.0,
+                              ),
+                              child: Row(
+                                crossAxisAlignment: CrossAxisAlignment.center,
+                                children: [
+                                  // Cancel Button (Left)
+                                  CupertinoButton(
+                                    padding: const EdgeInsets.only(right: 8.0),
+                                    minSize: 30,
+                                    onPressed: _cancelListening,
+                                    child: Icon(
+                                      CupertinoIcons.xmark_circle_fill,
+                                      color: CupertinoColors.secondaryLabel
+                                          .resolveFrom(context),
+                                      size: 20.0,
+                                    ),
+                                  ),
+                                  // Native Waveform (Middle, Expanded)
+                                  Expanded(
+                                    child: NativeWaveform(
+                                      controller: _waveformController,
+                                      height: 30.0,
+                                    ),
+                                  ),
+                                  // Timer and Checkmark (Right)
+                                  Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      // Timer Text
+                                      Text(
+                                        _formatDuration(_elapsedTime),
+                                        style: TextStyle(
+                                          color: CupertinoColors.secondaryLabel
+                                              .resolveFrom(context),
+                                          fontSize: 13,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 8.0),
+                                      // Checkmark Button
+                                      CupertinoButton(
+                                        padding: EdgeInsets.zero,
+                                        minSize: 30,
+                                        onPressed: _handleMicPressed,
+                                        child: Icon(
+                                          CupertinoIcons.checkmark_circle_fill,
+                                          color: CupertinoColors.secondaryLabel
+                                              .resolveFrom(context),
+                                          size: 20.0,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ],
                               ),
                             ),
-                          ),
+                          ] else ...[
+                            const SizedBox(height: 8.0),
+                            Container(
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                color: CupertinoColors.secondaryLabel
+                                    .resolveFrom(context)
+                                    .withValues(alpha: 0.1),
+                              ),
+                              child: CupertinoButton(
+                                padding: const EdgeInsets.all(12.0),
+                                minSize: 60,
+                                onPressed:
+                                    _isInitializing ? null : _handleMicPressed,
+                                child: Icon(
+                                  CupertinoIcons.mic,
+                                  color: CupertinoColors.secondaryLabel
+                                      .resolveFrom(context),
+                                  size: 32.0,
+                                ),
+                              ),
+                            ),
+                          ],
                         ],
-                      ],
-                    ),
+                      ),
                     ),
                   ),
                 ),

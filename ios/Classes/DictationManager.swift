@@ -20,6 +20,7 @@ class DictationManager: NSObject, FlutterStreamHandler {
     
     private var state: DictationState = .idle
     private let stateQueue = DispatchQueue(label: "com.flutterdictation.dictationManager.state")
+    private var audioPreservationConfig: AudioPreservationConfig?
     
     // MARK: - State Management
     
@@ -86,7 +87,17 @@ class DictationManager: NSObject, FlutterStreamHandler {
             handleInitialize(result: result)
             
         case "startListening":
-            handleStartListening(result: result)
+            do {
+                let options = try DictationStartListeningOptions.from(arguments: call.arguments)
+                handleStartListening(options: options, result: result)
+            } catch {
+                let dictationError = DictationError.from(error)
+                result(FlutterError(
+                    code: dictationError.code,
+                    message: dictationError.localizedDescription,
+                    details: nil
+                ))
+            }
             
         case "stopListening":
             handleStopListening(result: result)
@@ -165,7 +176,7 @@ class DictationManager: NSObject, FlutterStreamHandler {
         }
     }
     
-    private func handleStartListening(result: @escaping FlutterResult) {
+    private func handleStartListening(options: DictationStartListeningOptions, result: @escaping FlutterResult) {
         let startTime = CFAbsoluteTimeGetCurrent()
         log("=== START LISTENING START ===", level: .info)
         log("Current state: \(state)", level: .info)
@@ -190,7 +201,14 @@ class DictationManager: NSObject, FlutterStreamHandler {
                 // We're already on main thread, so permission request will preserve user action context
                 log("Starting audio engine...", level: .info)
                 let audioEngineStartTime = CFAbsoluteTimeGetCurrent()
-                try await audioEngineManager.startRecording()
+                self.audioPreservationConfig = options.audioPreservationConfig
+                let preservationRequest = options.audioPreservationConfig?.audioEngineRequest
+                do {
+                    try await audioEngineManager.startRecording(audioPreservationRequest: preservationRequest)
+                } catch {
+                    self.audioPreservationConfig = nil
+                    throw error
+                }
                 let audioEngineDuration = (CFAbsoluteTimeGetCurrent() - audioEngineStartTime) * 1000
                 log("Audio engine started in \(String(format: "%.2f", audioEngineDuration))ms", level: .info)
                 logEvent("audio_engine_start", metadata: ["duration_ms": audioEngineDuration])
@@ -324,14 +342,20 @@ class DictationManager: NSObject, FlutterStreamHandler {
             // Stop speech recognition (will finalize result)
             speechRecognizerManager.stopRecognition()
             
-            // Stop audio engine
-            audioEngineManager.stopRecording()
+            // Stop audio engine and finalize audio preservation
+            let preservationResult = audioEngineManager.stopRecording(deletePreservedAudio: false)
+            let preservationConfig = self.audioPreservationConfig
+            self.audioPreservationConfig = nil
             
             await MainActor.run {
                 self.stateQueue.sync {
                     self.state = .stopped
                 }
                 self.sendStatus("stopped")
+                if let config = preservationConfig, let resultMetadata = preservationResult {
+                    log("Emitting audioFile event after stop (wasCancelled=false, deleteIfCancelled=\(config.deleteIfCancelled))", level: .info)
+                    self.sendAudioFile(resultMetadata, wasCancelled: false)
+                }
                 result(nil)
             }
         }
@@ -356,13 +380,21 @@ class DictationManager: NSObject, FlutterStreamHandler {
             speechRecognizerManager.cancelRecognition()
             
             // Stop audio engine
-            audioEngineManager.stopRecording()
+            let preservationConfig = self.audioPreservationConfig
+            let shouldDeleteAudio = preservationConfig?.deleteIfCancelled ?? true
+            let preservationResult = audioEngineManager.stopRecording(deletePreservedAudio: shouldDeleteAudio)
+            self.audioPreservationConfig = nil
             
             await MainActor.run {
                 self.stateQueue.sync {
                     self.state = .stopped
                 }
                 self.sendStatus("cancelled")
+                if let config = preservationConfig,
+                   let resultMetadata = preservationResult {
+                    log("Emitting audioFile event after cancel (wasCancelled=true, deleteIfCancelled=\(config.deleteIfCancelled))", level: .info)
+                    self.sendAudioFile(resultMetadata, wasCancelled: true)
+                }
                 result(nil)
             }
         }
@@ -433,6 +465,25 @@ class DictationManager: NSObject, FlutterStreamHandler {
             if Int.random(in: 0..<100) == 0 {
                 log("ERROR: Cannot send audioLevel event - eventSink is nil!", level: .error)
             }
+        }
+    }
+    
+    private func sendAudioFile(_ result: AudioPreservationResult, wasCancelled: Bool) {
+        let event: [String: Any] = [
+            "type": "audioFile",
+            "path": result.fileURL.path,
+            "durationMs": result.durationMs,
+            "fileSizeBytes": result.fileSizeBytes,
+            "sampleRate": result.sampleRate,
+            "channelCount": result.channelCount,
+            "wasCancelled": wasCancelled
+        ]
+        log("Sending audioFile event: path=\"\(result.fileURL.path)\", durationMs=\(result.durationMs), sizeBytes=\(result.fileSizeBytes), wasCancelled=\(wasCancelled)", level: .info)
+        if let sink = eventSink {
+            sink(event)
+            log("audioFile event sent successfully", level: .debug)
+        } else {
+            log("ERROR: Cannot send audioFile event - eventSink is nil!", level: .error)
         }
     }
     
@@ -612,6 +663,7 @@ enum DictationError: Error {
     case audioEngineFailed
     case recognitionFailed
     case initializationFailed
+    case invalidArguments(String)
     case unknown(Error)
     
     var code: String {
@@ -626,6 +678,8 @@ enum DictationError: Error {
             return "RECOGNITION_ERROR"
         case .initializationFailed:
             return "INIT_ERROR"
+        case .invalidArguments:
+            return "INVALID_ARGUMENTS"
         case .unknown:
             return "UNKNOWN_ERROR"
         }
@@ -643,12 +697,18 @@ enum DictationError: Error {
             return "Speech recognition failed. Please try again."
         case .initializationFailed:
             return "Failed to initialize dictation service. Please try again."
+        case .invalidArguments(let message):
+            return message
         case .unknown(let error):
             return error.localizedDescription
         }
     }
     
     static func from(_ error: Error) -> DictationError {
+        if let dictationError = error as? DictationError {
+            return dictationError
+        }
+        
         if let speechError = error as? SpeechRecognizerError {
             switch speechError {
             case .notAuthorized:
@@ -672,6 +732,76 @@ enum DictationError: Error {
         }
         
         return .unknown(error)
+    }
+}
+
+// MARK: - Start Options Parsing
+
+struct DictationStartListeningOptions {
+    let audioPreservationConfig: AudioPreservationConfig?
+    
+    static func from(arguments: Any?) throws -> DictationStartListeningOptions {
+        guard let dictionary = arguments as? [String: Any] else {
+            return DictationStartListeningOptions(audioPreservationConfig: nil)
+        }
+        
+        let shouldPreserveAudio = dictionary["preserveAudio"] as? Bool ?? false
+        guard shouldPreserveAudio else {
+            return DictationStartListeningOptions(audioPreservationConfig: nil)
+        }
+        
+        let deleteIfCancelled = dictionary["deleteAudioIfCancelled"] as? Bool ?? true
+        let customPath = (dictionary["preservedAudioFilePath"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let fileURL = try AudioPreservationConfig.resolveFileURL(customPath: customPath)
+        let config = AudioPreservationConfig(fileURL: fileURL, deleteIfCancelled: deleteIfCancelled)
+        return DictationStartListeningOptions(audioPreservationConfig: config)
+    }
+}
+
+struct AudioPreservationConfig {
+    private static let supportedFileExtensions: Set<String> = ["wav", "caf"]
+    
+    let fileURL: URL
+    let deleteIfCancelled: Bool
+    
+    var audioEngineRequest: AudioPreservationRequest {
+        return AudioPreservationRequest(fileURL: fileURL)
+    }
+    
+    static func resolveFileURL(customPath: String?) throws -> URL {
+        let targetURL: URL
+        if let path = customPath, !path.isEmpty {
+            if path.hasPrefix("/") {
+                targetURL = URL(fileURLWithPath: path)
+            } else {
+                let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+                targetURL = documentsURL.appendingPathComponent(path)
+            }
+        } else {
+            targetURL = defaultFileURL()
+        }
+        
+        return try sanitizedFileURL(from: targetURL)
+    }
+    
+    private static func sanitizedFileURL(from url: URL) throws -> URL {
+        var finalURL = url
+        if finalURL.pathExtension.isEmpty {
+            finalURL = finalURL.appendingPathExtension("wav")
+        }
+        let ext = finalURL.pathExtension.lowercased()
+        guard supportedFileExtensions.contains(ext) else {
+            throw DictationError.invalidArguments("Unsupported audio file extension \"\(ext)\". Use .wav or .caf.")
+        }
+        return finalURL
+    }
+    
+    private static func defaultFileURL() -> URL {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withFullDate, .withTime, .withDashSeparatorInDate, .withColonSeparatorInTime]
+        let timestamp = formatter.string(from: Date()).replacingOccurrences(of: ":", with: "-")
+        let filename = "dictation-\(timestamp).wav"
+        return FileManager.default.temporaryDirectory.appendingPathComponent(filename)
     }
 }
 
