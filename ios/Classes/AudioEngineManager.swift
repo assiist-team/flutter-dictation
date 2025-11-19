@@ -141,6 +141,7 @@ class AudioEngineManager {
     
     /// Checks if microphone permission is granted.
     /// - Returns: True if granted, false otherwise
+    @MainActor
     private func checkMicrophonePermission() -> Bool {
         return audioSession.recordPermission == .granted
     }
@@ -149,6 +150,7 @@ class AudioEngineManager {
     /// Must be called on the main thread to ensure the permission dialog appears.
     /// iOS requires permission dialogs to be triggered directly from user actions on the main thread.
     /// - Returns: True if granted, false otherwise
+    @MainActor
     private func requestMicrophonePermission() async -> Bool {
         let requestStartTime = CFAbsoluteTimeGetCurrent()
         let currentStatus = audioSession.recordPermission
@@ -174,70 +176,41 @@ class AudioEngineManager {
         }
         
         // For .undetermined status, request permission
-        // CRITICAL: Permission request must happen on main thread to preserve user action context.
+        // @MainActor ensures we're on the main thread to preserve user action context.
         // iOS requires permission dialogs to be triggered directly from user actions on main thread.
         log("Permission status is .undetermined, requesting permission...", level: .info)
         
         return await withCheckedContinuation { continuation in
-            // Ensure we're on main thread - this is critical for permission dialog to appear
-            if Thread.isMainThread {
-                self.log("Calling requestRecordPermission directly on MAIN thread", level: .info)
-                let callTime = CFAbsoluteTimeGetCurrent()
-                self.audioSession.requestRecordPermission { granted in
-                    let callbackTime = CFAbsoluteTimeGetCurrent()
-                    let callbackDuration = (callbackTime - callTime) * 1000
-                    let totalDuration = (callbackTime - requestStartTime) * 1000
-                    
-                    self.log("Permission request callback received after \(String(format: "%.2f", callbackDuration))ms", level: .info)
-                    self.log("Total permission request duration: \(String(format: "%.2f", totalDuration))ms", level: .info)
-                    self.log("Permission granted: \(granted)", level: granted ? .info : .warning)
-                    
-                    // Verify the status matches what we got
-                    let verifiedStatus = self.audioSession.recordPermission
-                    self.log("Verified permission status after callback: \(verifiedStatus)", level: .info)
-                    
-                    if verifiedStatus != (granted ? AVAudioSession.RecordPermission.granted : AVAudioSession.RecordPermission.denied) {
-                        self.log("WARNING: Permission status mismatch! Callback said \(granted) but status is \(verifiedStatus)", level: .error)
-                    }
-                    
-                    self.logAudioSessionState("permission-request-complete")
-                    self.log("=== REQUEST MICROPHONE PERMISSION COMPLETE ===", level: .info)
-                    continuation.resume(returning: granted)
+            // @MainActor guarantees we're on the main thread, so we can call requestRecordPermission directly
+            self.log("Calling requestRecordPermission on MAIN thread (guaranteed by @MainActor)", level: .info)
+            let callTime = CFAbsoluteTimeGetCurrent()
+            self.audioSession.requestRecordPermission { granted in
+                let callbackTime = CFAbsoluteTimeGetCurrent()
+                let callbackDuration = (callbackTime - callTime) * 1000
+                let totalDuration = (callbackTime - requestStartTime) * 1000
+                
+                self.log("Permission request callback received after \(String(format: "%.2f", callbackDuration))ms", level: .info)
+                self.log("Total permission request duration: \(String(format: "%.2f", totalDuration))ms", level: .info)
+                self.log("Permission granted: \(granted)", level: granted ? .info : .warning)
+                
+                // Verify the status matches what we got
+                let verifiedStatus = self.audioSession.recordPermission
+                self.log("Verified permission status after callback: \(verifiedStatus)", level: .info)
+                
+                if verifiedStatus != (granted ? AVAudioSession.RecordPermission.granted : AVAudioSession.RecordPermission.denied) {
+                    self.log("WARNING: Permission status mismatch! Callback said \(granted) but status is \(verifiedStatus)", level: .error)
                 }
-            } else {
-                // Dispatch to main thread if we're not already there
-                self.log("NOT on main thread! Dispatching to main thread (this may break permission dialog)", level: .warning)
-                DispatchQueue.main.async {
-                    self.log("Now on main thread, calling requestRecordPermission", level: .info)
-                    let callTime = CFAbsoluteTimeGetCurrent()
-                    self.audioSession.requestRecordPermission { granted in
-                        let callbackTime = CFAbsoluteTimeGetCurrent()
-                        let callbackDuration = (callbackTime - callTime) * 1000
-                        let totalDuration = (callbackTime - requestStartTime) * 1000
-                        
-                        self.log("Permission request callback received after \(String(format: "%.2f", callbackDuration))ms", level: .info)
-                        self.log("Total permission request duration: \(String(format: "%.2f", totalDuration))ms", level: .info)
-                        self.log("Permission granted: \(granted)", level: granted ? .info : .warning)
-                        
-                        // Verify the status matches what we got
-                        let verifiedStatus = self.audioSession.recordPermission
-                        self.log("Verified permission status after callback: \(verifiedStatus)", level: .info)
-                        
-                        if verifiedStatus != (granted ? AVAudioSession.RecordPermission.granted : AVAudioSession.RecordPermission.denied) {
-                            self.log("WARNING: Permission status mismatch! Callback said \(granted) but status is \(verifiedStatus)", level: .error)
-                        }
-                        
-                        self.logAudioSessionState("permission-request-complete")
-                        self.log("=== REQUEST MICROPHONE PERMISSION COMPLETE ===", level: .info)
-                        continuation.resume(returning: granted)
-                    }
-                }
+                
+                self.logAudioSessionState("permission-request-complete")
+                self.log("=== REQUEST MICROPHONE PERMISSION COMPLETE ===", level: .info)
+                continuation.resume(returning: granted)
             }
         }
     }
     
     /// Prepares the audio engine, checking permissions first.
     /// - Throws: Audio engine preparation errors or permission errors
+    @MainActor
     private func prepareAudioEngineWithPermissionCheck() throws {
         // Check microphone permission synchronously first
         let permissionStatus = audioSession.recordPermission
@@ -304,6 +277,7 @@ class AudioEngineManager {
     /// Checks and requests microphone permissions if needed.
     /// - Parameter audioPreservationRequest: Optional request describing how to persist the raw audio stream.
     /// - Throws: Audio engine start errors or permission errors
+    @MainActor
     func startRecording(audioPreservationRequest: AudioPreservationRequest? = nil) async throws {
         let startTime = CFAbsoluteTimeGetCurrent()
         log("=== START RECORDING START ===", level: .info)
@@ -359,21 +333,8 @@ class AudioEngineManager {
         
         if permissionStatus != .granted {
             log("Permission not granted, requesting permission...", level: .info)
-            // Request permission - CRITICAL: Must be called directly on main thread to preserve user action context
+            // Request permission - @MainActor ensures we're on the main thread to preserve user action context
             // iOS requires permission dialogs to be triggered directly from user actions on the main thread.
-            // The Task wrapper breaks this context chain, so we call directly since we ensure main thread upstream.
-            // Verify we're on main thread - if not, this is a programming error
-            guard Thread.isMainThread else {
-                log("ERROR: Not on main thread! This will prevent permission dialog from appearing.", level: .error)
-                log("Thread: \(Thread.current.name ?? "unnamed")", level: .error)
-                throw NSError(
-                    domain: "AudioEngineManager",
-                    code: -1,
-                    userInfo: [
-                        NSLocalizedDescriptionKey: "Permission request must be called on main thread. This is a programming error."
-                    ]
-                )
-            }
             let granted = await requestMicrophonePermission()
             
             let permissionDuration = (CFAbsoluteTimeGetCurrent() - permissionStartTime) * 1000
