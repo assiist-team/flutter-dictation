@@ -763,6 +763,17 @@ enum EncodingError: Error {
     case formatCreationFailed(String)
     case writerCreationFailed(String)
     
+    var code: String {
+        switch self {
+        case .invalidOutputFormat:
+            return "encoding_invalid_output"
+        case .formatCreationFailed:
+            return "encoding_format_failed"
+        case .writerCreationFailed:
+            return "encoding_writer_failed"
+        }
+    }
+    
     var localizedDescription: String {
         switch self {
         case .invalidOutputFormat(let message):

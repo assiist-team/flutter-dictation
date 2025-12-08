@@ -12,6 +12,7 @@ Low-latency, native-backed dictation for Flutter with real-time waveform streami
 - ChatGPT-style waveform driven by native audio levels at 30 FPS.
 - Canonically encoded `.m4a` captures (AAC‑LC, mono, 44.1 kHz, 64 kbps) with built-in 60‑minute duration guardrails plus surfaced “duration_limit_reached” status/errors.
 - Normalization helper (`normalizeAudio`) that ingests any local file, enforces the canonical format/bitrate/duration, and returns a normalized path + metadata.
+- Import workflow in the example app that routes selected audio files through `normalizeAudio`, surfaces canonical metadata, and shows error feedback before any upload step.
 - Pre-warmed audio engine / speech recognizer for instant mic activation.
 - Robust permission guardrails (microphone + speech) with surfaced error states.
 - Cupertino-friendly UI primitives (`AudioControlsDecorator`, `NativeWaveform`) you can drop around any text input.

@@ -862,8 +862,9 @@ extension DictationManager: AudioEngineManagerDelegate {
     }
     
     func audioEngineManager(_ manager: AudioEngineManager, didEncounterEncodingError error: Error) {
-        log("Audio encoder failed to start: \(error.localizedDescription)", level: .error)
-        sendError("Audio encoding unavailable: \(error.localizedDescription)", code: "ENCODING_ERROR")
+        let errorInfo = mapEncodingError(error)
+        log("Audio encoder failed to start: \(errorInfo.message) [code=\(errorInfo.code)]", level: .error)
+        sendError("Audio encoding unavailable: \(errorInfo.message)", code: errorInfo.code)
     }
     
     private func handleDurationLimitReached() {
@@ -905,6 +906,21 @@ extension DictationManager: AudioEngineManagerDelegate {
                 }
             }
         }
+    }
+    
+    private func mapEncodingError(_ error: Error) -> (code: String, message: String) {
+        if let encodingError = error as? EncodingError {
+            return (encodingError.code, encodingError.localizedDescription)
+        }
+        
+        let nsError = error as NSError
+        if nsError.domain == NSCocoaErrorDomain {
+            return ("encoding_io_error", nsError.localizedDescription)
+        }
+        if nsError.domain == AVFoundationErrorDomain {
+            return ("encoding_av_error", nsError.localizedDescription)
+        }
+        return ("encoding_unknown", error.localizedDescription)
     }
 }
 

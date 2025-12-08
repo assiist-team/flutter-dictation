@@ -4,7 +4,7 @@ import 'package:flutter/services.dart';
 /// Configuration options for each dictation session.
 class DictationSessionOptions {
   const DictationSessionOptions({
-    this.preserveAudio = false,
+    this.preserveAudio = true,
     this.preservedAudioFilePath,
     this.deleteAudioIfCancelled = true,
   });
@@ -13,7 +13,7 @@ class DictationSessionOptions {
   final bool preserveAudio;
 
   /// Optional absolute or sandbox-relative path (e.g., `Recordings/clip.wav`) for the audio file.
-  /// When omitted, the native layer will pick a timestamped file inside the temporary directory.
+  /// When omitted, the native layer stores a timestamped file in the canonical recordings directory.
   final String? preservedAudioFilePath;
 
   /// When true, the audio file is removed if the session is cancelled instead of stopped.

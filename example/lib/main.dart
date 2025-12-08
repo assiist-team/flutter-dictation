@@ -1,6 +1,9 @@
 import 'dart:async';
+
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_dictation/flutter_dictation.dart';
 
 void main() {
@@ -41,6 +44,9 @@ class _DictationExampleScreenState extends State<DictationExampleScreen> {
   Timer? _recordingTimer;
   Duration _elapsedTime = Duration.zero;
   DictationAudioFile? _latestAudioFile;
+  bool _isNormalizingImport = false;
+  NormalizedAudioResult? _normalizedImportResult;
+  String? _normalizeError;
 
   @override
   void initState() {
@@ -250,6 +256,89 @@ class _DictationExampleScreenState extends State<DictationExampleScreen> {
     });
   }
 
+  Future<void> _importAndNormalizeAudio() async {
+    if (_isNormalizingImport) return;
+    setState(() {
+      _isNormalizingImport = true;
+      _normalizedImportResult = null;
+      _normalizeError = null;
+      _status = 'Selecting file to normalize...';
+    });
+
+    try {
+      final picked = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: [
+          'wav',
+          'mp3',
+          'm4a',
+          'aac',
+          'caf',
+          'aiff',
+          'flac',
+          'ogg',
+        ],
+        allowMultiple: false,
+      );
+
+      if (picked == null ||
+          picked.files.isEmpty ||
+          picked.files.first.path == null) {
+        if (mounted) {
+          setState(() {
+            _status = 'Normalization cancelled';
+          });
+        }
+        return;
+      }
+
+      final sourcePath = picked.files.first.path!;
+      if (mounted) {
+        setState(() {
+          _status = 'Normalizing imported audio...';
+        });
+      }
+
+      final normalizedResult = await _dictationService.normalizeAudio(
+        sourcePath,
+      );
+
+      if (!mounted) return;
+      setState(() {
+        _normalizedImportResult = normalizedResult;
+        _status = 'Imported audio normalized';
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Normalized audio saved at ${normalizedResult.canonicalPath}',
+          ),
+        ),
+      );
+    } on PlatformException catch (e) {
+      _handleNormalizationError(e.message ?? 'Platform error (${e.code})');
+    } catch (e) {
+      _handleNormalizationError(e.toString());
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isNormalizingImport = false;
+        });
+      }
+    }
+  }
+
+  void _handleNormalizationError(String message) {
+    if (!mounted) return;
+    setState(() {
+      _normalizeError = message;
+      _status = 'Normalization failed';
+    });
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text('Normalization failed: $message')));
+  }
+
   @override
   Widget build(BuildContext context) {
     return CupertinoPageScaffold(
@@ -414,10 +503,98 @@ class _DictationExampleScreenState extends State<DictationExampleScreen> {
                 ),
               ),
               const SizedBox(height: 20),
+              _buildNormalizationPanel(context),
             ],
           ),
         ),
       ),
+    );
+  }
+
+  Widget _buildNormalizationPanel(BuildContext context) {
+    final normalized = _normalizedImportResult;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const SizedBox(height: 16),
+        Text(
+          'Import & Normalize Audio',
+          style: TextStyle(
+            fontSize: 16,
+            fontWeight: FontWeight.w600,
+            color: CupertinoColors.label.resolveFrom(context),
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          'Select an existing file and normalize it before uploading.',
+          style: TextStyle(
+            fontSize: 13,
+            color: CupertinoColors.secondaryLabel.resolveFrom(context),
+          ),
+        ),
+        const SizedBox(height: 12),
+        CupertinoButton.filled(
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          onPressed: _isNormalizingImport ? null : _importAndNormalizeAudio,
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              if (_isNormalizingImport) ...[
+                const CupertinoActivityIndicator(),
+                const SizedBox(width: 8),
+              ],
+              Text(
+                _isNormalizingImport
+                    ? 'Normalizing...'
+                    : 'Import & Normalize Audio',
+              ),
+            ],
+          ),
+        ),
+        if (normalized != null) ...[
+          const SizedBox(height: 12),
+          Text(
+            'Normalized file:',
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+              color: CupertinoColors.label.resolveFrom(context),
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Path: ${normalized.canonicalPath}',
+            style: TextStyle(
+              fontSize: 12,
+              color: CupertinoColors.secondaryLabel.resolveFrom(context),
+            ),
+          ),
+          Text(
+            'Duration: ${_formatDuration(normalized.duration)} • '
+            'Size: ${_formatFileSize(normalized.sizeBytes)}',
+            style: TextStyle(
+              fontSize: 12,
+              color: CupertinoColors.secondaryLabel.resolveFrom(context),
+            ),
+          ),
+          Text(
+            'Reencoded: ${normalized.wasReencoded ? 'Yes' : 'Already canonical'}',
+            style: TextStyle(
+              fontSize: 12,
+              color: CupertinoColors.secondaryLabel.resolveFrom(context),
+            ),
+          ),
+        ],
+        if (_normalizeError != null) ...[
+          const SizedBox(height: 12),
+          Text(
+            'Normalization error: $_normalizeError',
+            style: TextStyle(fontSize: 12, color: Colors.red.shade600),
+          ),
+        ],
+        const SizedBox(height: 20),
+      ],
     );
   }
 
@@ -426,5 +603,14 @@ class _DictationExampleScreenState extends State<DictationExampleScreen> {
     final minutes = twoDigits(duration.inMinutes.remainder(60));
     final seconds = twoDigits(duration.inSeconds.remainder(60));
     return "$minutes:$seconds";
+  }
+
+  String _formatFileSize(int bytes) {
+    const kb = 1024;
+    const mb = 1024 * kb;
+    if (bytes >= mb) {
+      return '${(bytes / mb).toStringAsFixed(2)} MB';
+    }
+    return '${(bytes / kb).toStringAsFixed(1)} KB';
   }
 }
