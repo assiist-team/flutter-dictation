@@ -21,6 +21,7 @@ class DictationManager: NSObject, FlutterStreamHandler {
     private var state: DictationState = .idle
     private let stateQueue = DispatchQueue(label: "com.flutterdictation.dictationManager.state")
     private var audioPreservationConfig: AudioPreservationConfig?
+    private var isHandlingDurationLimit = false
     
     // MARK: - State Management
     
@@ -48,6 +49,7 @@ class DictationManager: NSObject, FlutterStreamHandler {
         self.speechRecognizerManager = speechRecognizerManager ?? SpeechRecognizerManager()
         
         super.init()
+        self.audioEngineManager.delegate = self
         
         // Set up event channel stream handler
         eventChannel.setStreamHandler(self)
@@ -107,6 +109,9 @@ class DictationManager: NSObject, FlutterStreamHandler {
             
         case "getAudioLevel":
             handleGetAudioLevel(result: result)
+            
+        case "normalizeAudio":
+            handleNormalizeAudio(arguments: call.arguments, result: result)
             
         default:
             log("Unknown method: \(call.method)", level: .warning)
@@ -263,7 +268,7 @@ class DictationManager: NSObject, FlutterStreamHandler {
                 do {
                     print("🔴 LINE 233: About to call startAudioLevelStreaming() function")
                     NSLog("🔴 LINE 233: About to call startAudioLevelStreaming() function")
-                    startAudioLevelStreaming()
+                    try startAudioLevelStreaming()
                     print("🔴 LINE 234: startAudioLevelStreaming() call completed successfully")
                     NSLog("🔴 LINE 234: startAudioLevelStreaming() call completed successfully")
                     log("startAudioLevelStreaming() call completed successfully", level: .info)
@@ -405,6 +410,44 @@ class DictationManager: NSObject, FlutterStreamHandler {
         result(level)
     }
     
+    private func handleNormalizeAudio(arguments: Any?, result: @escaping FlutterResult) {
+        guard let sourcePath = arguments as? String else {
+            result(FlutterError(
+                code: "INVALID_ARGUMENTS",
+                message: "normalizeAudio requires a sourcePath string argument",
+                details: nil
+            ))
+            return
+        }
+        
+        Task {
+            do {
+                let encoder = AudioEncoderManager()
+                let normalizedResult = try await encoder.normalizeAudio(sourcePath: sourcePath)
+                
+                await MainActor.run {
+                    let response: [String: Any] = [
+                        "canonicalPath": normalizedResult.canonicalPath,
+                        "durationMs": Int(normalizedResult.durationMs),
+                        "sizeBytes": normalizedResult.sizeBytes,
+                        "wasReencoded": normalizedResult.wasReencoded
+                    ]
+                    result(response)
+                }
+            } catch {
+                let normalizationError = error as? NormalizationError ?? NormalizationError.encoderError("Unknown error: \(error.localizedDescription)")
+                
+                await MainActor.run {
+                    result(FlutterError(
+                        code: normalizationError.code,
+                        message: normalizationError.localizedDescription,
+                        details: nil
+                    ))
+                }
+            }
+        }
+    }
+    
     // MARK: - Speech Recognizer Callbacks
     
     private func setupSpeechRecognizerCallbacks() {
@@ -487,12 +530,15 @@ class DictationManager: NSObject, FlutterStreamHandler {
         }
     }
     
-    private func sendError(_ message: String) {
-        let event: [String: Any] = [
+    private func sendError(_ message: String, code: String? = nil) {
+        var event: [String: Any] = [
             "type": "error",
             "message": message
         ]
-        log("Sending error event: message=\"\(message)\"", level: .error)
+        if let code = code {
+            event["code"] = code
+        }
+        log("Sending error event: message=\"\(message)\", code=\(code ?? "none")", level: .error)
         if let sink = eventSink {
             sink(event)
             log("Error event sent successfully", level: .debug)
@@ -503,7 +549,8 @@ class DictationManager: NSObject, FlutterStreamHandler {
     
     // MARK: - Audio Level Streaming
     
-    private func startAudioLevelStreaming() {
+    // Marked as `throws` so callers can wrap in `do/catch` without changing behavior.
+    private func startAudioLevelStreaming() throws {
         // CRITICAL DEBUG: Direct print to verify function is called
         // Using multiple print methods to ensure visibility
         print("🔴🔴🔴 CRITICAL LINE 456: startAudioLevelStreaming() FUNCTION ENTRY - THIS MUST APPEAR 🔴🔴🔴")
@@ -759,7 +806,7 @@ struct DictationStartListeningOptions {
 }
 
 struct AudioPreservationConfig {
-    private static let supportedFileExtensions: Set<String> = ["wav", "caf"]
+    private static let supportedFileExtensions: Set<String> = ["wav", "caf", "m4a"]
     
     let fileURL: URL
     let deleteIfCancelled: Bool
@@ -774,8 +821,7 @@ struct AudioPreservationConfig {
             if path.hasPrefix("/") {
                 targetURL = URL(fileURLWithPath: path)
             } else {
-                let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-                targetURL = documentsURL.appendingPathComponent(path)
+                targetURL = CanonicalAudioStorage.recordingsDirectory.appendingPathComponent(path)
             }
         } else {
             targetURL = defaultFileURL()
@@ -787,21 +833,78 @@ struct AudioPreservationConfig {
     private static func sanitizedFileURL(from url: URL) throws -> URL {
         var finalURL = url
         if finalURL.pathExtension.isEmpty {
-            finalURL = finalURL.appendingPathExtension("wav")
+            finalURL = finalURL.appendingPathExtension("m4a")
         }
         let ext = finalURL.pathExtension.lowercased()
         guard supportedFileExtensions.contains(ext) else {
-            throw DictationError.invalidArguments("Unsupported audio file extension \"\(ext)\". Use .wav or .caf.")
+            throw DictationError.invalidArguments("Unsupported audio file extension \"\(ext)\". Use .wav, .caf, or .m4a.")
         }
+        
+        let directoryURL = finalURL.deletingLastPathComponent()
+        do {
+            try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        } catch {
+            throw DictationError.invalidArguments("Failed to prepare directory: \(error.localizedDescription)")
+        }
+
         return finalURL
     }
     
     private static func defaultFileURL() -> URL {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withFullDate, .withTime, .withDashSeparatorInDate, .withColonSeparatorInTime]
-        let timestamp = formatter.string(from: Date()).replacingOccurrences(of: ":", with: "-")
-        let filename = "dictation-\(timestamp).wav"
-        return FileManager.default.temporaryDirectory.appendingPathComponent(filename)
+        return CanonicalAudioStorage.makeRecordingURL()
+    }
+}
+
+extension DictationManager: AudioEngineManagerDelegate {
+    func audioEngineManagerDidHitDurationLimit(_ manager: AudioEngineManager) {
+        log("Duration limit event received from AudioEngineManager", level: .warning)
+        handleDurationLimitReached()
+    }
+    
+    func audioEngineManager(_ manager: AudioEngineManager, didEncounterEncodingError error: Error) {
+        log("Audio encoder failed to start: \(error.localizedDescription)", level: .error)
+        sendError("Audio encoding unavailable: \(error.localizedDescription)", code: "ENCODING_ERROR")
+    }
+    
+    private func handleDurationLimitReached() {
+        guard !isHandlingDurationLimit else {
+            return
+        }
+        isHandlingDurationLimit = true
+        
+        Task { [weak self] in
+            guard let self = self else {
+                return
+            }
+            defer {
+                self.isHandlingDurationLimit = false
+            }
+            
+            self.stateQueue.sync {
+                guard self.state == .listening else {
+                    return
+                }
+                self.state = .stopping
+            }
+            
+            self.stopAudioLevelStreaming()
+            self.audioEngineManager.removeBufferCallback()
+            self.speechRecognizerManager.stopRecognition()
+            let preservationResult = self.audioEngineManager.stopRecording(deletePreservedAudio: false)
+            let config = self.audioPreservationConfig
+            self.audioPreservationConfig = nil
+            
+            await MainActor.run {
+                self.stateQueue.sync {
+                    self.state = .stopped
+                }
+                self.sendStatus("duration_limit_reached")
+                self.sendError("Recording duration limit reached (60 minutes).", code: "DURATION_LIMIT_REACHED")
+                if let config = config, let resultMetadata = preservationResult {
+                    self.sendAudioFile(resultMetadata, wasCancelled: false)
+                }
+            }
+        }
     }
 }
 

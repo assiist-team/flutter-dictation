@@ -66,6 +66,31 @@ class DictationAudioFile {
   }
 }
 
+/// Result produced by `normalizeAudio`, describing the canonical output file.
+class NormalizedAudioResult {
+  NormalizedAudioResult({
+    required this.canonicalPath,
+    required this.duration,
+    required this.sizeBytes,
+    required this.wasReencoded,
+  });
+
+  final String canonicalPath;
+  final Duration duration;
+  final int sizeBytes;
+  final bool wasReencoded;
+
+  factory NormalizedAudioResult.fromMap(Map<String, dynamic> map) {
+    final durationMs = (map['durationMs'] as num?)?.toDouble() ?? 0.0;
+    return NormalizedAudioResult(
+      canonicalPath: map['canonicalPath'] as String? ?? '',
+      duration: Duration(milliseconds: durationMs.round()),
+      sizeBytes: (map['sizeBytes'] as num?)?.toInt() ?? 0,
+      wasReencoded: map['wasReencoded'] as bool? ?? true,
+    );
+  }
+}
+
 /// Service for managing native iOS dictation via platform channels.
 /// Provides low-latency speech recognition with real-time results and audio levels.
 class NativeDictationService {
@@ -262,6 +287,22 @@ class NativeDictationService {
     }
   }
 
+  /// Normalize an existing audio file to the canonical `.m4a` format.
+  Future<NormalizedAudioResult> normalizeAudio(String sourcePath) async {
+    try {
+      final result = await _methodChannel.invokeMethod(
+        'normalizeAudio',
+        sourcePath,
+      );
+      final normalized = Map<String, dynamic>.from(result as Map);
+      return NormalizedAudioResult.fromMap(normalized);
+    } on PlatformException catch (e) {
+      throw Exception('Failed to normalize audio: ${e.message}');
+    } catch (e) {
+      throw Exception('Failed to normalize audio: $e');
+    }
+  }
+
   /// Set up event stream to receive real-time updates.
   void _setupEventStream({
     required Function(String text, bool isFinal) onResult,
@@ -329,9 +370,13 @@ class NativeDictationService {
 
           case 'error':
             final errorMessage = data['message'] as String? ?? 'Unknown error';
+            final errorCode = data['code'] as String?;
             print(
               '[NativeDictationService] Processing error event: message="$errorMessage"',
             );
+            if (errorCode != null) {
+              print('[NativeDictationService] Error code: $errorCode');
+            }
             if (onError != null) {
               onError(errorMessage);
             } else {

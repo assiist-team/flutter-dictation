@@ -1,7 +1,7 @@
+import 'package:flutter/material.dart';
 import 'package:flutter/cupertino.dart';
 import '../services/waveform_controller.dart';
 import '../widgets/native_waveform.dart';
-import '../theme/dictation_styles.dart';
 
 /// A decorator widget that adds audio recording controls (mic/checkmark, timer, cancel, waveform)
 /// below a provided child widget (typically a text field).
@@ -52,6 +52,8 @@ class AudioControlsDecorator extends StatelessWidget {
 
   // Helper to build the control row based on listening state
   Widget _buildControlRow(BuildContext context) {
+    final theme = Theme.of(context);
+    
     // If not listening, show only Mic button (aligned right)
     if (!isListening) {
       if (onMicPressed == null) {
@@ -65,7 +67,7 @@ class AudioControlsDecorator extends StatelessWidget {
           Container(
             decoration: BoxDecoration(
               shape: BoxShape.circle,
-              color: DictationStyles.secondaryTextColor(context).withValues(alpha: 0.1),
+              color: theme.colorScheme.primary,
             ),
             child: CupertinoButton(
               padding: const EdgeInsets.all(12.0),
@@ -73,7 +75,7 @@ class AudioControlsDecorator extends StatelessWidget {
               onPressed: onMicPressed,
               child: Icon(
                 CupertinoIcons.mic,
-                color: DictationStyles.secondaryTextColor(context),
+                color: theme.colorScheme.onPrimary,
                 size: 32.0, // Larger icon size
               ),
             ),
@@ -86,8 +88,8 @@ class AudioControlsDecorator extends StatelessWidget {
     const double controlRowHeight = 40.0;
     const double waveformHeight = 30.0;
     
-    // Use the same color for buttons and waveform to ensure they match
-    final buttonColor = DictationStyles.secondaryTextColor(context);
+    // Use theme colors for buttons and waveform to ensure they match
+    final buttonColor = theme.colorScheme.onSurface;
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -128,7 +130,7 @@ class AudioControlsDecorator extends StatelessWidget {
                   // Timer Text
                   Text(
                     _formatDuration(elapsedTime),
-                    style: DictationStyles.inputTextStyle(context).copyWith(
+                    style: theme.textTheme.bodySmall?.copyWith(
                       color: buttonColor,
                       fontSize: 13,
                     ),

@@ -10,6 +10,8 @@ Low-latency, native-backed dictation for Flutter with real-time waveform streami
 ## Feature Highlights
 - Streaming speech recognition with partial + final transcripts over event channels.
 - ChatGPT-style waveform driven by native audio levels at 30 FPS.
+- Canonically encoded `.m4a` captures (AAC‑LC, mono, 44.1 kHz, 64 kbps) with built-in 60‑minute duration guardrails plus surfaced “duration_limit_reached” status/errors.
+- Normalization helper (`normalizeAudio`) that ingests any local file, enforces the canonical format/bitrate/duration, and returns a normalized path + metadata.
 - Pre-warmed audio engine / speech recognizer for instant mic activation.
 - Robust permission guardrails (microphone + speech) with surfaced error states.
 - Cupertino-friendly UI primitives (`AudioControlsDecorator`, `NativeWaveform`) you can drop around any text input.
@@ -57,16 +59,17 @@ Flutter UI --> NativeDictationService (Dart) --> MethodChannel com.flutter_dicta
 | `stopListening`   | —    | Stop recognizer gracefully, end audio, stop engine.                          |
 | `cancelListening` | —    | Abort in-flight recognition and stop engine immediately.                     |
 | `getAudioLevel`   | —    | Returns smoothed `0.0-1.0` level from `AudioEngineManager`.                  |
+| `normalizeAudio`  | `sourcePath` (string) | Transcode/copy the requested file into canonical `.m4a`, enforce duration limits, and return normalized metadata (`normalizedResult`). |
 
 **Event channel `com.flutter_dictation/events`**
 
 | Event type  | Payload                                                                 | Notes                                          |
 |-------------|-------------------------------------------------------------------------|------------------------------------------------|
-| `status`    | `{ "status": "ready|listening|stopped|cancelled|error:code" }`          | Drives UI state + timers.                      |
+| `status`    | `{ "status": "ready|listening|stopped|cancelled|duration_limit_reached|error:code" }`          | Drives UI state + timers.                      |
 | `result`    | `{ "text": "<transcript>", "isFinal": bool }`                           | Partial + final text; final marks commit.      |
 | `audioLevel`| `{ "level": double }`                                                   | 30 FPS waveform samples, already smoothed.     |
-| `audioFile` | `{ "path": string, "durationMs": double, "fileSizeBytes": int, "sampleRate": double, "channelCount": int, "wasCancelled": bool }` | Fired after stop/cancel when audio preservation is enabled. |
-| `error`     | `{ "message": "<human-readable>" }`                                     | Emitted before Flutter error callback fires.   |
+| `audioFile` | `{ "path": string, "durationMs": double, "fileSizeBytes": int, "sampleRate": double, "channelCount": int, "wasCancelled": bool }` | Fired after stop/cancel when audio preservation is enabled. Also emitted immediately when the duration limit fires so Flutter can upload the partial recording. |
+| `error`     | `{ "message": "<human-readable>", "code": "<stable-code>"? }`                                     | Emitted before Flutter error callback fires.   |
 
 ## Flutter API Surface
 ### `NativeDictationService`
@@ -75,8 +78,11 @@ Flutter UI --> NativeDictationService (Dart) --> MethodChannel com.flutter_dicta
 - `Future<void> stopListening()`
 - `Future<void> cancelListening()`
 - `Future<double> getAudioLevel()`
+- `Future<NormalizedAudioResult> normalizeAudio(String sourcePath)`
 - `void dispose()`
 - `DictationSessionOptions` + `DictationAudioFile` let you mirror the microphone input to disk (`preserveAudio`, `preservedAudioFilePath`, `deleteAudioIfCancelled`) and observe the resulting file via the `onAudioFile` callback.
+
+`NormalizedAudioResult` contains canonical metadata (`canonicalPath`, `duration`, `sizeBytes`, `wasReencoded`) so you can upload or inspect normalized files in a structured way.
 
 Responsibilities: manage platform channels, hook/unhook the event subscription, surface audio levels to waveforms, and guard retries when Flutter hot reload temporarily drops the native plugin.
 
@@ -224,9 +230,9 @@ See the deeper design notes in `docs/native_implementation/01_IOS_AUDIO_ENGINE_S
 ## Audio Preservation
 - Pass `DictationSessionOptions(preserveAudio: true, ...)` to `startListening` whenever you need access to the raw microphone PCM stream after dictation finishes.
 - Handle the `onAudioFile` callback (and the matching `audioFile` event) to receive a `DictationAudioFile` with the final path, duration, size (bytes), sample rate, channel count, and whether the session ended in a cancel.
-- Omit `preservedAudioFilePath` to let the plugin drop a timestamped `.wav` into `NSTemporaryDirectory()`, or provide either an absolute sandbox path or a Documents-relative path; supported extensions are `.wav` and `.caf`.
+- Canonical recordings now live under `Documents/FlutterDictationRecordings` and always use `.m4a` (AAC‑LC, 44.1 kHz, mono, 64 kbps). Provide either an absolute sandbox path or a Documents-relative path via `preservedAudioFilePath`; we also respect `.wav`/`.caf` for backwards compatibility, but new captures default to canonical `.m4a`.
 - Control retention on cancel flows via `deleteAudioIfCancelled` (defaults to `true`).
-- Files are written as mono linear PCM (float) for maximum fidelity—re-encode or upload as needed once you receive the callback.
+- Files are written as encoded AAC instead of PCM, so no additional encoding step is required before upload—the returned metadata already reflects the canonical format.
 
 ## Permissions
 Add both microphone and speech recognition descriptions in `ios/Runner/Info.plist`:

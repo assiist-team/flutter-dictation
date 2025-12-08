@@ -3,6 +3,11 @@ import AudioToolbox
 import Foundation
 import UIKit
 
+protocol AudioEngineManagerDelegate: AnyObject {
+    func audioEngineManagerDidHitDurationLimit(_ manager: AudioEngineManager)
+    func audioEngineManager(_ manager: AudioEngineManager, didEncounterEncodingError error: Error)
+}
+
 /// Manages AVAudioEngine for low-latency audio recording and waveform visualization.
 /// Provides real-time audio buffer access with optimal configuration for speech recognition.
 class AudioEngineManager {
@@ -16,6 +21,13 @@ class AudioEngineManager {
     var engine: AVAudioEngine {
         return audioEngine
     }
+
+    private func notifyDurationLimitReached() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.delegate?.audioEngineManagerDidHitDurationLimit(self)
+        }
+    }
     
     private var inputNode: AVAudioInputNode {
         return audioEngine.inputNode
@@ -26,9 +38,11 @@ class AudioEngineManager {
     private var state: AudioEngineState = .idle
     private var bufferCount: Int = 0  // Track buffer count for logging
     private var isSessionActivated: Bool = false  // Track session activation state to avoid unnecessary reactivations
-    private var audioPreservationWriter: AudioPreservationWriter?
-    private var pendingAudioBuffers: [AVAudioPCMBuffer] = []  // Queue buffers until writer is ready
+    private var audioEncoderManager: AudioEncoderManager?
+    private var pendingAudioBuffers: [AVAudioPCMBuffer] = []  // Queue buffers until encoder is ready
     private let bufferQueue = DispatchQueue(label: "com.flutterdictation.audioEngine.bufferQueue")
+    
+    weak var delegate: AudioEngineManagerDelegate?
     
     // Audio level smoothing for waveform visualization
     private let levelSmoothingFactor: Float = 0.3  // Smooth transitions
@@ -102,8 +116,8 @@ class AudioEngineManager {
         // Buffer duration: 5ms for minimal latency
         try audioSession.setPreferredIOBufferDuration(0.005)
         
-        // Sample rate: 16kHz is sufficient for speech
-        try audioSession.setPreferredSampleRate(16000)
+        // Sample rate: 44.1kHz to match canonical format
+        try audioSession.setPreferredSampleRate(44100)
         
         // Activate session
         try audioSession.setActive(true)
@@ -261,7 +275,7 @@ class AudioEngineManager {
         let inputFormat = inputNode.inputFormat(forBus: 0)
         
         // Install tap to capture audio buffers
-        // Buffer size: 1024 samples = ~64ms at 16kHz (good balance)
+        // Buffer size: 1024 samples = ~23ms at 44.1kHz (good balance)
         inputNode.installTap(
             onBus: 0,
             bufferSize: 1024,
@@ -384,10 +398,10 @@ class AudioEngineManager {
             )
         }
         
-        // Sample rate: 16kHz is sufficient for speech
+        // Sample rate: 44.1kHz to match canonical format
         do {
-            try audioSession.setPreferredSampleRate(16000)
-            log("Sample rate set to 16kHz", level: .info)
+            try audioSession.setPreferredSampleRate(44100)
+            log("Sample rate set to 44.1kHz", level: .info)
         } catch {
             log("Failed to set sample rate: \(error)", level: .error)
             throw NSError(
@@ -676,14 +690,36 @@ class AudioEngineManager {
     // MARK: - Audio Preservation
     
     private func startAudioPreservationIfNeeded(request: AudioPreservationRequest) throws {
-        guard audioPreservationWriter == nil else {
-            log("Audio preservation already active, skipping new writer", level: .warning)
+        guard audioEncoderManager == nil else {
+            log("Audio encoder already active, skipping new encoder", level: .warning)
             return
         }
         
         let format = inputNode.inputFormat(forBus: 0)
-        log("Creating audio preservation writer (sampleRate=\(format.sampleRate), channels=\(format.channelCount))", level: .info)
-        audioPreservationWriter = try AudioPreservationWriter(outputURL: request.fileURL, format: format)
+        log("Creating audio encoder (sampleRate=\(format.sampleRate), channels=\(format.channelCount))", level: .info)
+        
+        // Ensure output URL has .m4a extension for canonical format
+        var outputURL = request.fileURL
+        if outputURL.pathExtension.lowercased() != "m4a" {
+            outputURL = outputURL.deletingPathExtension().appendingPathExtension("m4a")
+            log("Changed output extension to .m4a: \(outputURL.path)", level: .info)
+        }
+        
+        let encoder = AudioEncoderManager()
+        encoder.durationLimitReachedHandler = { [weak self] in
+            self?.notifyDurationLimitReached()
+        }
+        
+        do {
+            try encoder.startRecording(outputURL: outputURL, sourceFormat: format)
+            audioEncoderManager = encoder
+        } catch {
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                self.delegate?.audioEngineManager(self, didEncounterEncodingError: error)
+            }
+            throw error
+        }
     }
     
     /// Copies an AVAudioPCMBuffer to preserve its data (buffers may be reused by the system).
@@ -714,19 +750,19 @@ class AudioEngineManager {
         return bufferCopy
     }
     
-    /// Flushes any buffers that were queued before the writer was ready.
+    /// Flushes any buffers that were queued before the encoder was ready.
     private func flushPendingBuffers() {
         bufferQueue.sync {
-            guard let writer = self.audioPreservationWriter else {
+            guard let encoder = self.audioEncoderManager else {
                 self.pendingAudioBuffers.removeAll()
                 return
             }
             
             let count = self.pendingAudioBuffers.count
             if count > 0 {
-                log("Flushing \(count) queued audio buffers to writer", level: .info)
+                log("Flushing \(count) queued audio buffers to encoder", level: .info)
                 for buffer in self.pendingAudioBuffers {
-                    writer.append(buffer)
+                    encoder.append(buffer)
                 }
                 self.pendingAudioBuffers.removeAll()
                 log("Flushed \(count) buffers successfully", level: .info)
@@ -735,19 +771,39 @@ class AudioEngineManager {
     }
     
     private func stopAudioPreservation(deleteFile: Bool) -> AudioPreservationResult? {
-        guard let writer = audioPreservationWriter else {
+        guard let encoder = audioEncoderManager else {
             return nil
         }
         
-        log("Stopping audio preservation writer. deleteFile=\(deleteFile)", level: .info)
-        let result = writer.finish(deleteFile: deleteFile)
-        audioPreservationWriter = nil
-        if let result = result {
-            log("Audio preservation completed: path=\(result.fileURL.path), durationMs=\(result.durationMs), sizeBytes=\(result.fileSizeBytes)", level: .info)
-        } else {
-            log("Audio preservation writer cleaned up with no file result (deleteFile=\(deleteFile))", level: .info)
+        log("Stopping audio encoder. deleteFile=\(deleteFile)", level: .info)
+        
+        let encodingResult = encoder.stopRecording()
+        audioEncoderManager = nil
+        
+        if deleteFile {
+            if let result = encodingResult {
+                try? FileManager.default.removeItem(at: result.fileURL)
+                log("Audio file deleted as requested", level: .info)
+            }
+            return nil
         }
-        return result
+        
+        guard let result = encodingResult else {
+            log("Audio encoding completed with no file result", level: .info)
+            return nil
+        }
+        
+        // Convert EncodingResult to AudioPreservationResult
+        let preservationResult = AudioPreservationResult(
+            fileURL: result.fileURL,
+            durationMs: result.durationMs,
+            fileSizeBytes: result.fileSizeBytes,
+            sampleRate: result.sampleRate,
+            channelCount: result.channelCount
+        )
+        
+        log("Audio encoding completed: path=\(preservationResult.fileURL.path), durationMs=\(preservationResult.durationMs), sizeBytes=\(preservationResult.fileSizeBytes)", level: .info)
+        return preservationResult
     }
     
     // MARK: - Buffer Processing
@@ -783,19 +839,19 @@ class AudioEngineManager {
                                    newLevel * self.levelSmoothingFactor
         }
         
-        // Persist raw audio if requested.
-        // If writer isn't ready yet, queue the buffer to avoid losing audio.
-        if let writer = audioPreservationWriter {
-            writer.append(buffer)
-        } else if audioPreservationWriter == nil && state == .recording {
-            // Writer not ready yet - queue buffer to preserve audio
-            // Only queue if we're recording (writer might be initializing)
+        // Persist audio to canonical format if requested.
+        // If encoder isn't ready yet, queue the buffer to avoid losing audio.
+        if let encoder = audioEncoderManager {
+            encoder.append(buffer)
+        } else if audioEncoderManager == nil && state == .recording {
+            // Encoder not ready yet - queue buffer to preserve audio
+            // Only queue if we're recording (encoder might be initializing)
             bufferQueue.sync {
                 // Create a copy of the buffer since AVAudioPCMBuffer may be reused
                 if let bufferCopy = copyBuffer(buffer) {
                     self.pendingAudioBuffers.append(bufferCopy)
-                    // Limit queue size to prevent memory issues (keep last ~500ms at 16kHz = ~8000 frames)
-                    let maxFrames = Int(16000 * 0.5) // 500ms worth
+                    // Limit queue size to prevent memory issues (keep last ~500ms at 44.1kHz = ~22050 frames)
+                    let maxFrames = Int(44100 * 0.5) // 500ms worth
                     var totalFrames = 0
                     while totalFrames < maxFrames && !self.pendingAudioBuffers.isEmpty {
                         totalFrames += Int(self.pendingAudioBuffers.first!.frameLength)
