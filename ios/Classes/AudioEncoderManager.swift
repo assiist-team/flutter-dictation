@@ -342,7 +342,7 @@ class AudioEncoderManager {
         let sourceAsset = AVURLAsset(url: sourceURL)
         
         // Load asset properties
-        let duration = try await sourceAsset.load(.duration)
+        let duration = try await loadDuration(of: sourceAsset)
         let durationSeconds = CMTimeGetSeconds(duration)
         
         // Check duration limit
@@ -351,15 +351,19 @@ class AudioEncoderManager {
         }
         
         // Load audio track
-        let audioTracks = try await sourceAsset.loadTracks(withMediaType: .audio)
+        let audioTracks = try await loadAudioTracks(from: sourceAsset)
         guard let audioTrack = audioTracks.first else {
             throw NormalizationError.unsupportedFormat("No audio track found in source file")
         }
         
         // Check if already canonical
-        let formatDescriptions = try await audioTrack.load(.formatDescriptions)
+        let formatDescriptions = try await loadFormatDescriptions(for: audioTrack)
         if let formatDescription = formatDescriptions.first {
-            if isCanonicalFormat(formatDescription: formatDescription, durationSeconds: durationSeconds) {
+            if isCanonicalFormat(
+                formatDescription: formatDescription,
+                audioTrack: audioTrack,
+                durationSeconds: durationSeconds
+            ) {
                 log("Input is already canonical format, using fast-path copy", level: .info)
                 return try await fastPathCopy(sourceURL: sourceURL)
             }
@@ -494,7 +498,7 @@ class AudioEncoderManager {
         
         // Create sample buffer
         var sampleBuffer: CMSampleBuffer?
-        let sampleCount = numSamples
+        let sampleCount = CMItemCount(numSamples)
         var timingInfo = CMSampleTimingInfo(
             duration: CMTime(value: 1, timescale: Int32(canonicalFormat.sampleRate)),
             presentationTimeStamp: CMTime(value: Int64(totalFrames), timescale: Int32(canonicalFormat.sampleRate)),
@@ -520,9 +524,67 @@ class AudioEncoderManager {
         
         return sampleBuf
     }
-    
-    
-    private func isCanonicalFormat(formatDescription: CMFormatDescription, durationSeconds: Double) -> Bool {
+
+    private func loadValue<T>(
+        for key: String,
+        from object: AVAsynchronousKeyValueLoading,
+        description: String,
+        getter: @escaping () throws -> T
+    ) async throws -> T {
+        return try await withCheckedThrowingContinuation { continuation in
+            object.loadValuesAsynchronously(forKeys: [key]) {
+                var error: NSError?
+                let status = object.statusOfValue(forKey: key, error: &error)
+                switch status {
+                case .loaded:
+                    do {
+                        let value = try getter()
+                        continuation.resume(returning: value)
+                    } catch {
+                        continuation.resume(throwing: error)
+                    }
+                case .failed, .cancelled:
+                    let message = error?.localizedDescription ?? "status=\(status.rawValue)"
+                    continuation.resume(throwing: NormalizationError.encoderError("Failed to load \(description): \(message)"))
+                default:
+                    let message = error?.localizedDescription ?? "status=\(status.rawValue)"
+                    continuation.resume(throwing: NormalizationError.encoderError("Unexpected status \(status.rawValue) while loading \(description): \(message)"))
+                }
+            }
+        }
+    }
+
+    private func loadDuration(of asset: AVAsset) async throws -> CMTime {
+        try await loadValue(
+            for: "duration",
+            from: asset,
+            description: "asset duration"
+        ) {
+            asset.duration
+        }
+    }
+
+    private func loadAudioTracks(from asset: AVAsset) async throws -> [AVAssetTrack] {
+        try await loadValue(
+            for: "tracks",
+            from: asset,
+            description: "audio tracks"
+        ) {
+            asset.tracks(withMediaType: .audio)
+        }
+    }
+
+    private func loadFormatDescriptions(for track: AVAssetTrack) async throws -> [CMFormatDescription] {
+        try await loadValue(
+            for: "formatDescriptions",
+            from: track,
+            description: "track format descriptions"
+        ) {
+            track.formatDescriptions as? [CMFormatDescription] ?? []
+        }
+    }
+
+    private func isCanonicalFormat(formatDescription: CMFormatDescription, audioTrack: AVAssetTrack, durationSeconds: Double) -> Bool {
         // Check duration
         guard durationSeconds <= AudioEncoderManager.maxDurationSeconds else {
             return false
@@ -548,19 +610,11 @@ class AudioEncoderManager {
             return false
         }
         
-        // For AAC, we need to check bitrate from extensions
-        // Note: Bitrate checking is approximate since AAC files may have variable bitrate
-        // We'll check if it's close to 64kbps (±10% tolerance = 57.6-70.4 kbps)
-        if let extensions = CMAudioFormatDescriptionGetExtensions(formatDescription) as? [String: Any],
-           let bitrate = extensions[kAudioFormatProperty_BitRate as String] as? Int {
-            let minBitrate = Int(Double(AudioEncoderManager.canonicalBitrate) * 0.9)
-            let maxBitrate = Int(Double(AudioEncoderManager.canonicalBitrate) * 1.1)
-            guard bitrate >= minBitrate && bitrate <= maxBitrate else {
-                return false
-            }
-        } else {
-            // If we can't determine bitrate, assume it might not match
-            // (conservative approach - re-encode to ensure exact format)
+        // For AAC, check if estimated bitrate is within tolerance (±10%)
+        let estimatedBitrate = Int(audioTrack.estimatedDataRate.rounded())
+        let minBitrate = Int(Double(AudioEncoderManager.canonicalBitrate) * 0.9)
+        let maxBitrate = Int(Double(AudioEncoderManager.canonicalBitrate) * 1.1)
+        guard estimatedBitrate >= minBitrate && estimatedBitrate <= maxBitrate else {
             return false
         }
         
@@ -580,7 +634,7 @@ class AudioEncoderManager {
         }
         
         let sourceAsset = AVURLAsset(url: sourceURL)
-        let duration = try await sourceAsset.load(.duration)
+        let duration = try await loadDuration(of: sourceAsset)
         let durationSeconds = CMTimeGetSeconds(duration)
         let durationMs = durationSeconds * 1000.0
         
@@ -612,7 +666,7 @@ class AudioEncoderManager {
                 AVLinearPCMBitDepthKey: 32,
                 AVLinearPCMIsFloatKey: true,
                 AVLinearPCMIsBigEndianKey: false,
-                AVLinearPCMIsNonInterleavedKey: true
+                AVLinearPCMIsNonInterleaved: true
             ]
         )
         
@@ -722,7 +776,7 @@ class AudioEncoderManager {
             throw NormalizationError.ioError("Failed to get file attributes")
         }
         
-        let duration = try await sourceAsset.load(.duration)
+        let duration = try await loadDuration(of: sourceAsset)
         let durationSeconds = CMTimeGetSeconds(duration)
         let durationMs = durationSeconds * 1000.0
         
