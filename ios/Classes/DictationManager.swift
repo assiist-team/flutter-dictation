@@ -13,7 +13,7 @@ class DictationManager: NSObject, FlutterStreamHandler {
     private let methodChannel: FlutterMethodChannel
     private let eventChannel: FlutterEventChannel
     
-    private var eventSink: FlutterEventSink?
+    private var eventSink: FlutterEventSink? // strong ref because FlutterEventSink is a block
     private var audioLevelTimer: Timer?
     private var isStreamingAudioLevels = false
     private let audioLevelQueue = DispatchQueue(label: "com.flutterdictation.dictationManager.audioLevel")
@@ -643,17 +643,35 @@ class DictationManager: NSObject, FlutterStreamHandler {
         log("=== START AUDIO LEVEL STREAMING COMPLETE ===", level: .info)
     }
     
-    private func stopAudioLevelStreaming() {
+    /// Stops the audio level timer. `forceSynchronousTeardown` is used during deinit
+    /// to avoid creating new weak references while the object is being destroyed.
+    private func stopAudioLevelStreaming(forceSynchronousTeardown: Bool = false) {
         log("=== STOP AUDIO LEVEL STREAMING ===", level: .info)
         audioLevelQueue.sync {
             isStreamingAudioLevels = false
         }
         
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            self.audioLevelTimer?.invalidate()
-            self.audioLevelTimer = nil
-            self.log("Audio level timer invalidated and cleared", level: .info)
+        let tearDownTimer: (DictationManager) -> Void = { manager in
+            if let timer = manager.audioLevelTimer {
+                timer.invalidate()
+                manager.log("Audio level timer invalidated", level: .info)
+            } else {
+                manager.log("Audio level timer already nil", level: .debug)
+            }
+            manager.audioLevelTimer = nil
+        }
+        
+        if Thread.isMainThread {
+            tearDownTimer(self)
+        } else if forceSynchronousTeardown {
+            DispatchQueue.main.sync {
+                tearDownTimer(self)
+            }
+        } else {
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                tearDownTimer(self)
+            }
         }
     }
     
@@ -696,9 +714,10 @@ class DictationManager: NSObject, FlutterStreamHandler {
     // MARK: - Cleanup
     
     deinit {
-        stopAudioLevelStreaming()
+        stopAudioLevelStreaming(forceSynchronousTeardown: true)
         audioEngineManager.stopRecording()
         speechRecognizerManager.cancelRecognition()
+        eventSink = nil
     }
 }
 
