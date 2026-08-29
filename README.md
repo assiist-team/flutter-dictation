@@ -285,5 +285,15 @@ cd example && flutter run
 ## Legacy Module
 `legacy/` maintains the original `speech_to_text` + `audio_waveforms` implementation for reference only. Do not mix it with the native path; specs should target the native stack unless explicitly stated.
 
+## Verify
+
+```bash
+flutter pub get
+flutter test
+```
+
+The package currently passes 23 Dart and Flutter tests. Native microphone, speech
+recognition, and latency behavior still require an iOS simulator or device.
+
 ## License
-This project is available for use in your applications.
+MIT. See `LICENSE`.
